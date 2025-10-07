@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+
+{% block title %}Results - Arshin Registry Synchronization System{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-md-8">
+        <div class="card">
+            <div class="card-header">
+                <h3>Processing Results</h3>
+            </div>
+            <div class="card-body">
+                {% if error %}
+                <div class="alert alert-danger">
+                    <h5>Error</h5>
+                    <p>{{ error }}</p>
+                    <a href="/" class="btn btn-primary">Go to Upload</a>
+                </div>
+                {% else %}
+                <div class="alert alert-success">
+                    <h4>Processing Complete!</h4>
+                    <p>Your Excel file has been processed successfully.</p>
+                </div>
+                
+                <div class="mb-3">
+                    <p><strong>Task ID:</strong> {{ task_id }}</p>
+                </div>
+                
+                {% if can_download %}
+                <div class="text-center mb-4">
+                    <a href="/api/v1/results/{{ task_id }}" class="btn btn-success btn-lg" download>
+                        <i class="fas fa-download"></i> Download Results
+                    </a>
+                </div>
+                
+                <div class="card">
+                    <div class="card-header">
+                        <h5>What's next?</h5>
+                    </div>
+                    <div class="card-body">
+                        <p>The downloaded file contains:</p>
+                        <ul>
+                            <li>Matched records from the Arshin registry</li>
+                            <li>Records not found in the Arshin registry marked as "NOT_FOUND"</li>
+                            <li>Records with invalid certificate formats marked appropriately</li>
+                        </ul>
+                    </div>
+                </div>
+                {% endif %}
+                {% endif %}
+                
+                <div class="mt-4">
+                    <a href="/" class="btn btn-primary">Process Another File</a>
+                    <a href="/status/{{ task_id }}" class="btn btn-secondary">Check Status</a>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

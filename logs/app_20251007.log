@@ -3470,3 +3470,5 @@
 2025-10-07 18:29:00 | INFO | src.api.main:shutdown_event:59 | Shutting down Arshin Registry Synchronization System
 2025-10-07 18:29:01 | INFO | src.api.main:startup_event:54 | Starting up Arshin Registry Synchronization System
 2025-10-07 18:30:28 | INFO | src.api.main:startup_event:54 | Starting up Arshin Registry Synchronization System
+2025-10-07 18:44:24 | INFO | src.api.routes.health:health_check:27 | Health check endpoint accessed
+2025-10-07 18:45:26 | WARNING | src.services.file_validator:validate_file_type:43 | File uploads/b14bddab-4ebc-4907-8bf1-9c8487182654_test.xlsx has unexpected MIME type inode/x-empty

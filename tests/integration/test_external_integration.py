@@ -1,5 +1,6 @@
 import pytest
 from fastapi.testclient import TestClient
+
 from src.api.main import app
 
 
@@ -15,7 +16,7 @@ def test_external_system_api_flow(client):
     assert response.status_code == 200
     data = response.json()
     assert data["status"] == "healthy"
-    
+
     # Test that the API endpoints are available
     # We can't test the full file upload flow without a real file,
     # but we can check that endpoints exist and return appropriate error codes

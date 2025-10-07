@@ -1,12 +1,13 @@
+import os
+
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+
+from src.api.middleware.error_handler import ErrorHandlingMiddleware
+from src.api.middleware.rate_limit import RateLimitMiddleware
 from src.config.settings import settings
 from src.utils.logging_config import app_logger
-from src.api.middleware.rate_limit import RateLimitMiddleware
-from src.api.middleware.error_handler import ErrorHandlingMiddleware
-import os
-
 
 # Create upload and results directories if they don't exist
 os.makedirs(settings.upload_dir, exist_ok=True)
@@ -38,7 +39,7 @@ app.mount("/static", StaticFiles(directory="src/static"), name="static")
 templates = Jinja2Templates(directory="src/templates")
 
 # Import and include routes after app creation to avoid circular imports
-from src.api.routes import upload, status, results, health, web_interface
+from src.api.routes import health, results, status, upload, web_interface
 
 # Include API routes
 app.include_router(upload.router, prefix=settings.api_v1_prefix, tags=["upload"])

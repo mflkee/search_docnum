@@ -1,7 +1,8 @@
-from loguru import logger
-import sys
 import os
-from datetime import datetime
+import sys
+from datetime import datetime, timezone
+
+from loguru import logger
 
 
 def setup_logging():
@@ -10,14 +11,14 @@ def setup_logging():
     """
     # Remove default logger
     logger.remove()
-    
+
     # Add file logging
     log_dir = "logs"
     os.makedirs(log_dir, exist_ok=True)
-    
+
     # Generate log file name with timestamp
-    log_file = os.path.join(log_dir, f"app_{datetime.now().strftime('%Y%m%d')}.log")
-    
+    log_file = os.path.join(log_dir, f"app_{datetime.now(timezone.utc).strftime('%Y%m%d')}.log")
+
     # Add file sink with rotation
     logger.add(
         log_file,
@@ -27,7 +28,7 @@ def setup_logging():
         format="{time:YYYY-MM-DD HH:mm:ss} | {level} | {name}:{function}:{line} | {message}",
         enqueue=True  # Thread-safe logging
     )
-    
+
     # Add console sink
     logger.add(
         sys.stderr,
@@ -35,7 +36,7 @@ def setup_logging():
         format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level}</level> | <cyan>{name}:{function}:{line}</cyan> | <level>{message}</level>",
         colorize=True
     )
-    
+
     return logger
 
 

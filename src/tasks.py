@@ -1,6 +1,6 @@
 from celery import Celery
-from src.config.settings import settings
 
+from src.config.settings import settings
 
 # Initialize Celery app
 celery_app = Celery(
@@ -9,7 +9,7 @@ celery_app = Celery(
     backend=settings.celery_result_backend,
     include=[
         "src.services.excel_parser",
-        "src.services.arshin_client", 
+        "src.services.arshin_client",
         "src.services.data_processor",
         "src.services.report_generator"
     ]

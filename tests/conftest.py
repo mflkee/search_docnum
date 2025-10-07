@@ -1,5 +1,4 @@
 import pytest
-from pytest_asyncio import fixture
 
 
 @pytest.fixture(scope="session")

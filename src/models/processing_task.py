@@ -1,7 +1,8 @@
-from pydantic import BaseModel
-from typing import Optional
 from datetime import datetime
 from enum import Enum
+from typing import Optional
+
+from pydantic import BaseModel, field_validator
 
 
 class ProcessingTaskStatus(str, Enum):
@@ -23,9 +24,13 @@ class ProcessingTask(BaseModel):
     file_path: str
     result_path: Optional[str] = None
     error_message: Optional[str] = None
-    
-    def __init__(self, **data):
-        super().__init__(**data)
-        # Validate progress is between 0 and 100
-        if self.progress < 0 or self.progress > 100:
+
+    @field_validator('progress')
+    @classmethod
+    def validate_progress(cls, v):
+        """
+        Validate that progress is between 0 and 100
+        """
+        if v < 0 or v > 100:
             raise ValueError("Progress must be between 0 and 100")
+        return v

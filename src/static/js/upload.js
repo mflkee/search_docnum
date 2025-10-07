@@ -14,6 +14,7 @@ document.addEventListener('DOMContentLoaded', function() {
     const statusLink = document.getElementById('statusLink');
     const verificationDateColumn = document.getElementById('verificationDateColumn');
     const certificateNumberColumn = document.getElementById('certificateNumberColumn');
+    const sheetName = document.getElementById('sheetName');
     
     // If this is the upload page, initialize the file upload functionality 
     if (uploadForm) {
@@ -54,6 +55,9 @@ document.addEventListener('DOMContentLoaded', function() {
             }
             if (certificateNumberColumn && certificateNumberColumn.value.trim()) {
                 formData.append('certificate_number_column', certificateNumberColumn.value.trim());
+            }
+            if (sheetName && sheetName.value.trim()) {
+                formData.append('sheet_name', sheetName.value.trim());
             }
             
             // Show progress

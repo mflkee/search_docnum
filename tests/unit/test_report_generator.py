@@ -1,6 +1,7 @@
 import pytest
+
+from src.models.report import ProcessingStatus, Report
 from src.services.report_generator import ReportGeneratorService
-from src.models.report import Report, ProcessingStatus
 
 
 @pytest.fixture
@@ -16,7 +17,7 @@ def test_report_generator_initialization(report_generator):
 
 def test_validate_report_data_empty_list(report_generator):
     """Test validation of empty report data."""
-    is_valid, error_msg = report_generator.validate_report_data([])
+    is_valid, _error_msg = report_generator.validate_report_data([])
     assert is_valid, "Empty list should be valid"
 
 
@@ -37,6 +38,6 @@ def test_validate_report_data_valid_reports(report_generator):
             excel_source_row=1
         )
     ]
-    
+
     is_valid, error_msg = report_generator.validate_report_data(reports)
     assert is_valid, f"Valid reports should pass validation, error: {error_msg}"

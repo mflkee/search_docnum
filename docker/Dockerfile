@@ -11,13 +11,16 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends build-essential \
+    && apt-get install -y --no-install-recommends build-essential libmagic1 libmagic-dev \
     && rm -rf /var/lib/apt/lists/*
 
 COPY . .
 
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --upgrade pip setuptools wheel \
-    && pip install .
+    && pip install . \
+    && pip check
+
+EXPOSE 8000
 
 CMD ["python", "-m", "search_docnum"]

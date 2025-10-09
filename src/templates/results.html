@@ -3,58 +3,86 @@
 {% block title %}Results - Arshin Registry Synchronization System{% endblock %}
 
 {% block content %}
-<div class="row justify-content-center">
-    <div class="col-md-8">
-        <div class="card">
-            <div class="card-header">
-                <h3>Processing Results</h3>
+<div class="results-wrapper"
+     data-results-root="true"
+     data-task-id="{{ task_id }}"
+     data-dataset-url="{{ dataset_url if dataset_url else '' }}"
+     data-download-url="{{ download_url if download_url else '' }}"
+     data-summary='{{ summary | tojson }}'>
+    {% if error %}
+    <div class="alert alert-danger">
+        <h4 class="mb-2">Не удалось сформировать результат</h4>
+        <p class="mb-3">{{ error }}</p>
+        <a href="/" class="btn btn-outline-light">Вернуться к загрузке</a>
+    </div>
+    {% else %}
+    <header class="results-head">
+        <div>
+            <h2 class="mb-1">Обработка завершена</h2>
+            <p class="text-muted mb-0">Задача <span class="fw-semibold">{{ task_id }}</span></p>
+        </div>
+        <div class="results-actions">
+            <a href="{{ download_url }}" class="btn btn-success" download>
+                Скачать Excel
+            </a>
+            <a href="/" class="btn btn-outline-light">Новая загрузка</a>
+        </div>
+    </header>
+
+    {% if dataset_available %}
+    <section class="table-panel" aria-label="Сводная таблица результатов">
+        <div class="table-toolbar">
+            <div class="toolbar-left">
+                <button class="btn btn-outline-light btn-sm" id="resetTableBtn" type="button"
+                        aria-label="Сбросить сортировки и фильтры">Сбросить</button>
             </div>
-            <div class="card-body">
-                {% if error %}
-                <div class="alert alert-danger">
-                    <h5>Error</h5>
-                    <p>{{ error }}</p>
-                    <a href="/" class="btn btn-primary">Go to Upload</a>
-                </div>
-                {% else %}
-                <div class="alert alert-success">
-                    <h4>Processing Complete!</h4>
-                    <p>Your Excel file has been processed successfully.</p>
-                </div>
-                
-                <div class="mb-3">
-                    <p><strong>Task ID:</strong> {{ task_id }}</p>
-                </div>
-                
-                {% if can_download %}
-                <div class="text-center mb-4">
-                    <a href="/api/v1/results/{{ task_id }}" class="btn btn-success btn-lg" download>
-                        <i class="fas fa-download"></i> Download Results
-                    </a>
-                </div>
-                
-                <div class="card">
-                    <div class="card-header">
-                        <h5>What's next?</h5>
-                    </div>
-                    <div class="card-body">
-                        <p>The downloaded file contains:</p>
-                        <ul>
-                            <li>Matched records from the Arshin registry</li>
-                            <li>Records not found in the Arshin registry marked as "NOT_FOUND"</li>
-                            <li>Records with invalid certificate formats marked appropriately</li>
-                        </ul>
-                    </div>
-                </div>
-                {% endif %}
-                {% endif %}
-                
-                <div class="mt-4">
-                    <a href="/" class="btn btn-primary">Process Another File</a>
-                    <a href="/status/{{ task_id }}" class="btn btn-secondary">Check Status</a>
-                </div>
+            <div class="toolbar-right">
+                <span class="visible-counter">Видимых строк: <strong id="visibleCount">0</strong></span>
             </div>
         </div>
+
+        <div class="table-responsive results-table-container">
+            <table class="results-table" id="resultsTable">
+                <thead>
+                    <tr id="resultsHeaderRow"></tr>
+                    <tr id="resultsFilterRow"></tr>
+                </thead>
+                <tbody id="resultsTableBody"></tbody>
+            </table>
+            <div class="empty-state" id="emptyState" hidden>
+                <p>По заданным фильтрам ничего не найдено.</p>
+            </div>
+        </div>
+    </section>
+    {% else %}
+    <div class="alert alert-info mt-4">
+        <p class="mb-0">Предпросмотр набора данных недоступен, но Excel-файл можно скачать по кнопке выше.</p>
     </div>
+    {% endif %}
+    <section class="summary-grid" id="summaryCards">
+        <article class="summary-card" data-summary-key="processed">
+            <h3>Всего</h3>
+            <p class="summary-value" id="summaryTotal">{{ summary.processed or summary.total or 0 }}</p>
+        </article>
+        <article class="summary-card updated" data-summary-key="updated">
+            <h3>Обновлено</h3>
+            <p class="summary-value" id="summaryUpdated">{{ summary.updated or 0 }}</p>
+        </article>
+        <article class="summary-card unchanged" data-summary-key="unchanged">
+            <h3>Без изменений</h3>
+            <p class="summary-value" id="summaryUnchanged">{{ summary.unchanged or 0 }}</p>
+        </article>
+        <article class="summary-card missing" data-summary-key="not_found">
+            <h3>Не найдено</h3>
+            <p class="summary-value" id="summaryMissing">{{ summary.not_found or summary.missing or 0 }}</p>
+        </article>
+    </section>
+    {% endif %}
 </div>
+{% endblock %}
+
+{% block scripts %}
+{% if not error and dataset_available %}
+<script src="/static/js/results-table.js"></script>
+{% endif %}
 {% endblock %}

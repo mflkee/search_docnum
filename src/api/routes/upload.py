@@ -1,3 +1,4 @@
+import json
 import os
 import uuid
 from datetime import datetime, timezone
@@ -149,6 +150,7 @@ async def process_file_background(
         certificate_number_column: Column header or Excel reference for certificate number
         sheet_name: Name of the sheet to parse (default 'Перечень')
     """
+    data_processor: Optional[DataProcessorService] = None
     try:
         # Get the task from the store
         if task_id not in active_tasks:
@@ -174,6 +176,20 @@ async def process_file_background(
             sheet_name
         )
 
+        statistics = data_processor.compute_processing_statistics(reports)
+
+        # Persist dataset preview for UI consumption
+        dataset_payload = {
+            "task_id": task_id,
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "summary": statistics,
+            "reports": [report.model_dump() for report in reports]
+        }
+
+        dataset_file_path = create_file_path('result', f"report_{task_id}.json")
+        with open(dataset_file_path, 'w', encoding='utf-8') as dataset_file:
+            json.dump(dataset_payload, dataset_file, ensure_ascii=False)
+
         # Update task progress to 90% - nearly complete
         task.progress = 90
 
@@ -183,6 +199,8 @@ async def process_file_background(
 
         # Update task with result path
         task.result_path = result_file_path
+        task.preview_path = dataset_file_path
+        task.summary = statistics
         task.progress = 100
         task.status = ProcessingTaskStatus.COMPLETED
         task.completed_at = datetime.now(timezone.utc)
@@ -206,3 +224,6 @@ async def process_file_background(
             task.error_message = str(e)
             task.progress = 100  # Mark as complete (with failure)
             task.completed_at = datetime.now(timezone.utc)
+    finally:
+        if data_processor is not None:
+            await data_processor.close()

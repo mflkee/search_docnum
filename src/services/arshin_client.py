@@ -36,6 +36,41 @@ class ArshinClientService:
         """Close the httpx client"""
         await self.client.aclose()
 
+    @staticmethod
+    def _parse_date_value(value: Any) -> Optional[datetime]:
+        """Best-effort conversion of various date representations to naive datetime."""
+        if not value:
+            return None
+
+        try:
+            if isinstance(value, datetime):
+                return value.replace(tzinfo=None) if value.tzinfo else value
+
+            if isinstance(value, str):
+                candidate = value.strip()
+                if not candidate:
+                    return None
+                candidate = candidate.replace('Z', '+00:00')
+                try:
+                    parsed = datetime.fromisoformat(candidate)
+                except ValueError:
+                    for fmt in ('%Y-%m-%d', '%d.%m.%Y', '%Y/%m/%d', '%d/%m/%Y'):
+                        try:
+                            parsed = datetime.strptime(candidate, fmt)
+                            break
+                        except ValueError:
+                            parsed = None
+                    if parsed is None:
+                        return None
+                return parsed.replace(tzinfo=None) if parsed.tzinfo else parsed
+
+            if isinstance(value, (int, float)):
+                return datetime.fromtimestamp(value)
+        except Exception:
+            return None
+
+        return None
+
     async def _rate_limit(self):
         """Implement rate limiting to prevent overloading the external API"""
         while True:
@@ -256,7 +291,7 @@ class ArshinClientService:
         stage1_year = year if year is not None else None
         if stage1_year is None and valid_until_year is not None:
             stage1_year = max(valid_until_year - 1, 1900)
-        if stage1_year is None:
+        if stage1_year is None or stage1_year < 1900:
             stage1_year = datetime.now().year
 
         stage1_results = await self.search_by_certificate_and_year(certificate_number, stage1_year)
@@ -267,6 +302,14 @@ class ArshinClientService:
                 f"Stage 1 retry for certificate {certificate_number} using original year {year}"
             )
             stage1_results = await self.search_by_certificate_and_year(certificate_number, year)
+
+        if not stage1_results and valid_until_year is not None and valid_until_year != stage1_year:
+            fallback_year = max(valid_until_year - 1, 1900)
+            if fallback_year not in {stage1_year, year}:
+                app_logger.info(
+                    f"Stage 1 retry for certificate {certificate_number} using valid-until derived year {fallback_year}"
+                )
+                stage1_results = await self.search_by_certificate_and_year(certificate_number, fallback_year)
 
         if not stage1_results:
             app_logger.info(
@@ -289,9 +332,16 @@ class ArshinClientService:
         mi_number = selected_record.get('mi_number')
         mi_modification = selected_record.get('mi_modification')  # if available
 
+        # Prepare hint years from selected record
+        selected_verification = self._parse_date_value(selected_record.get('verification_date'))
+        selected_valid = self._parse_date_value(
+            selected_record.get('valid_date')
+            or selected_record.get('validity_date')
+            or selected_record.get('valid_until')
+        )
+
         # Stage 2: Search by instrument parameters to get the actual verification record.
-        # Try current year first (for актуальная запись), then fall back to the original year,
-        # and finally attempt the previous year if nothing is found. As a last resort, query without year.
+        # Try prioritized years first to capture new verifications, fall back as needed.
         current_year = datetime.now().year
         candidate_years: list[int] = []
 
@@ -306,16 +356,24 @@ class ArshinClientService:
         add_candidate(year)
         if year is not None:
             add_candidate(year + 1)
+            add_candidate(year - 1)
         add_candidate(valid_until_year)
         if valid_until_year is not None:
             add_candidate(valid_until_year + 1)
             add_candidate(valid_until_year - 1)
+        if selected_verification:
+            add_candidate(selected_verification.year)
+            add_candidate(selected_verification.year + 1)
+        if selected_valid:
+            add_candidate(selected_valid.year)
+            add_candidate(selected_valid.year + 1)
 
         app_logger.debug(
             f"Stage 2 candidate years for certificate {certificate_number}: {candidate_years}"
         )
 
         stage2_results: list[dict[str, Any]] = []
+
         for candidate_year in candidate_years:
             candidate_results = await self.search_by_instrument_params(
                 mit_number=mit_number,
@@ -327,11 +385,12 @@ class ArshinClientService:
             ) or []
 
             if candidate_results:
+                stage2_results = candidate_results
                 app_logger.info(
                     f"Stage 2 search returned {len(candidate_results)} records for certificate {certificate_number} "
                     f"using year {candidate_year}"
                 )
-                stage2_results.extend(candidate_results)
+                break
 
         if not stage2_results:
             app_logger.info(

@@ -24,6 +24,8 @@ class ProcessingTask(BaseModel):
     file_path: str
     result_path: Optional[str] = None
     error_message: Optional[str] = None
+    summary: Optional[dict[str, int]] = None
+    preview_path: Optional[str] = None
 
     @field_validator('progress')
     @classmethod

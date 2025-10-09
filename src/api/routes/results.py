@@ -1,7 +1,8 @@
+import json
 import os
 
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 
 from src.api.routes.upload import active_tasks  # Using the same global task store
 
@@ -48,3 +49,30 @@ async def get_results(task_id: str):
     except Exception as e:
         app_logger.error(f"Error getting results for task {task_id}: {e}")
         raise HTTPException(status_code=500, detail=f"Results retrieval failed: {e!s}")
+
+
+@router.get("/results/{task_id}/dataset")
+async def get_results_dataset(task_id: str):
+    """Return processed dataset as JSON for interactive preview."""
+    try:
+        if task_id not in active_tasks:
+            raise HTTPException(status_code=404, detail="Task ID not found")
+
+        task = active_tasks[task_id]
+
+        if task.status != ProcessingTaskStatus.COMPLETED:
+            raise HTTPException(status_code=409, detail="Task is not completed")
+
+        if not task.preview_path or not os.path.exists(task.preview_path):
+            raise HTTPException(status_code=404, detail="Dataset preview not available")
+
+        with open(task.preview_path, 'r', encoding='utf-8') as dataset_file:
+            payload = json.load(dataset_file)
+
+        return JSONResponse(payload)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        app_logger.error(f"Error getting dataset for task {task_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Dataset retrieval failed: {e!s}")

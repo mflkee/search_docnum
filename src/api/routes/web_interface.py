@@ -62,7 +62,11 @@ async def get_results_page(request: Request, task_id: str):
                 "request": request,
                 "task_id": task_id,
                 "error": "Task ID not found",
-                "can_download": False
+                "can_download": False,
+                "dataset_available": False,
+                "summary": {},
+                "download_url": "",
+                "dataset_url": ""
             }
         )
 
@@ -81,7 +85,11 @@ async def get_results_page(request: Request, task_id: str):
                 "request": request,
                 "task_id": task_id,
                 "error": error_msg,
-                "can_download": False
+                "can_download": False,
+                "dataset_available": False,
+                "summary": {},
+                "download_url": "",
+                "dataset_url": ""
             }
         )
 
@@ -92,7 +100,11 @@ async def get_results_page(request: Request, task_id: str):
                 "request": request,
                 "task_id": task_id,
                 "error": "Result file not available",
-                "can_download": False
+                "can_download": False,
+                "dataset_available": False,
+                "summary": {},
+                "download_url": "",
+                "dataset_url": ""
             }
         )
 
@@ -105,7 +117,11 @@ async def get_results_page(request: Request, task_id: str):
             "task_id": task_id,
             "error": None,
             "can_download": True,
-            "result_path": task.result_path
+            "result_path": task.result_path,
+            "dataset_available": task.preview_path is not None,
+            "summary": task.summary or {},
+            "download_url": f"/api/v1/results/{task_id}",
+            "dataset_url": f"/api/v1/results/{task_id}/dataset"
         }
     )
 

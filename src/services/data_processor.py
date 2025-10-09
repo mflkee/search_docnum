@@ -318,6 +318,18 @@ class DataProcessorService:
         ).format(**stats)
         app_logger.info(summary_message)
 
+    def compute_processing_statistics(self, reports: list[Report]) -> dict[str, int]:
+        """
+        Public helper to expose processing statistics.
+
+        Args:
+            reports: Processed report objects
+
+        Returns:
+            Aggregated statistics dictionary
+        """
+        return self._compute_processing_statistics(reports)
+
     def create_processing_task(self, file_path: str, task_id: Optional[str] = None) -> ProcessingTask:
         """
         Create a processing task object for tracking file processing.

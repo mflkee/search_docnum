@@ -1,22 +1,32 @@
 import re
 
 
+_CERTIFICATE_PATTERNS = [
+    # Letter-Text/DD-MM-YYYY/Numbers
+    r'^[A-ZА-ЯЁ]-[A-ZА-ЯЁ0-9]+/[0-9]{2}-[0-9]{2}-[0-9]{4}/[0-9]+$',
+    # Letter-Text/Numbers/Numbers
+    r'^[A-ZА-ЯЁ]-[A-ZА-ЯЁ0-9]+/[0-9]+/[0-9]+$',
+    # Pure numeric certificate number with slashes (common in exported registries)
+    r'^[0-9]+/[0-9]+/[0-9]+$',
+    # Certificates starting with Cyrillic abbreviations (e.g., "СП j.0849-20"), ensure at least one digit
+    r'^[A-ZА-ЯЁ]{1,4}\s?[A-ZА-ЯЁ0-9./-]*\d[A-ZА-ЯЁ0-9./-]*$',
+]
+
+
+def _matches_certificate_patterns(value: str) -> bool:
+    for pattern in _CERTIFICATE_PATTERNS:
+        if re.match(pattern, value, re.IGNORECASE):
+            return True
+    return False
+
+
 def validate_certificate_format(certificate_number: str) -> bool:
     """
-    Validate certificate number format using regex pattern
-    Expected format examples: "C-VY/11-10-2024/385850983", "C-ABCD/15-01-2025/402123271"
-    Pattern: Letter-Text/Numbers where the middle part may contain dates
+    Validate certificate number format using supported patterns.
+    Returns True for known valid formats and leniently accepts other non-empty values containing digits.
     """
-    if not certificate_number:
-        return False
-
-    # More specific pattern for Arshin certificate numbers
-    # Format: Letter-Text/Date/Numbers or Letter-Text/Numbers
-    # Examples: "С-ВЯ/15-01-2025/402123271", "С-ДШФ/11-10-2024/385850983"
-    pattern = r'^[A-ZА-ЯЁ]-[A-ZА-ЯЁ0-9]+/[0-9]{2}-[0-9]{2}-[0-9]{4}/[0-9]+$|^' + \
-              r'[A-ZА-ЯЁ]-[A-ZА-ЯЁ0-9]+/[0-9]+/[0-9]+$'
-
-    return bool(re.match(pattern, certificate_number))
+    is_valid, _ = validate_certificate_format_detailed(certificate_number)
+    return is_valid
 
 
 def validate_certificate_format_detailed(certificate_number: str) -> tuple[bool, str]:
@@ -29,15 +39,19 @@ def validate_certificate_format_detailed(certificate_number: str) -> tuple[bool,
     if not certificate_number:
         return False, "Certificate number cannot be empty"
 
-    # Check if it matches one of the expected patterns
-    patterns = [
-        r'^[A-ZА-ЯЁ]-[A-ZА-ЯЁ0-9]+/[0-9]{2}-[0-9]{2}-[0-9]{4}/[0-9]+$',  # Letter-Text/DD-MM-YYYY/Numbers
-        r'^[A-ZА-ЯЁ]-[A-ZА-ЯЁ0-9]+/[0-9]+/[0-9]+$',  # Letter-Text/Numbers/Numbers
-    ]
+    value = certificate_number.strip()
+    if not value:
+        return False, "Certificate number cannot be empty"
 
-    for pattern in patterns:
-        if re.match(pattern, certificate_number):
-            return True, ""
+    if value.lower() in {"nat", "nan"}:
+        return False, "Certificate number cannot be NaT/NaN"
+
+    if _matches_certificate_patterns(value):
+        return True, ""
+
+    # Lenient fallback: accept strings that contain digits and have reasonable length
+    if any(ch.isdigit() for ch in value) and len(value) >= 4:
+        return True, ""
 
     return False, f"Certificate number '{certificate_number}' does not match expected patterns"
 

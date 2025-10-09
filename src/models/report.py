@@ -24,5 +24,7 @@ class Report(BaseModel):
     verification_date: str  # Verification date (from original Excel data)
     valid_date: Optional[str] = None  # Valid until date (from matched record, null if not found)
     result_docnum: Optional[str] = None  # Certificate number (from matched record, null if not found)
+    source_certificate_number: Optional[str] = None  # Certificate number supplied in the original Excel
+    certificate_updated: Optional[bool] = None  # Flag indicating whether certificate number changed after lookup
     processing_status: ProcessingStatus  # Status of matching process (MATCHED, NOT_FOUND, ERROR, INVALID_CERT_FORMAT)
     excel_source_row: int  # Row number in original Excel file for reference

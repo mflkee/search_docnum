@@ -24,8 +24,8 @@ active_tasks = {}
 async def upload_file(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
-    verification_date_column: Optional[str] = Form(default="AE"),
-    certificate_number_column: Optional[str] = Form(default="AI"),
+    verification_date_column: Optional[str] = Form(default="Дата поверки"),
+    certificate_number_column: Optional[str] = Form(default="Наличие документа с отметкой о поверке (№ св-ва о поверке)"),
     sheet_name: Optional[str] = Form(default="Перечень")
 ):
     """
@@ -33,8 +33,8 @@ async def upload_file(
 
     Args:
         file: The Excel file to upload
-        verification_date_column: Column identifier for verification date (default 'AE' or 'Дата поверки')
-        certificate_number_column: Column identifier for certificate number (default 'AI' or 'Наличие документа с отметкой о поверке (№ св-ва о поверке)')
+        verification_date_column: Column header or Excel reference for verification date (default 'Дата поверки')
+        certificate_number_column: Column header or Excel reference for certificate number (default 'Наличие документа с отметкой о поверке (№ св-ва о поверке)')
         sheet_name: Name of the sheet to parse (default 'Перечень')
     """
     # Generate a unique task ID
@@ -135,8 +135,8 @@ async def upload_file(
 async def process_file_background(
     task_id: str,
     file_path: str,
-    verification_date_column: str = "AE",
-    certificate_number_column: str = "AI",
+    verification_date_column: str = "Дата поверки",
+    certificate_number_column: str = "Наличие документа с отметкой о поверке (№ св-ва о поверке)",
     sheet_name: str = "Перечень"
 ):
     """
@@ -145,8 +145,8 @@ async def process_file_background(
     Args:
         task_id: The ID of the processing task
         file_path: Path to the uploaded file
-        verification_date_column: Column identifier for verification date
-        certificate_number_column: Column identifier for certificate number
+        verification_date_column: Column header or Excel reference for verification date
+        certificate_number_column: Column header or Excel reference for certificate number
         sheet_name: Name of the sheet to parse (default 'Перечень')
     """
     try:

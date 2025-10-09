@@ -1,5 +1,7 @@
 import asyncio
+import re
 import time
+from collections import deque
 from datetime import datetime
 from typing import Any, Optional
 
@@ -17,11 +19,16 @@ class ArshinClientService:
 
     def __init__(self):
         self.base_url = settings.arshin_api_base_url
+        max_connections = settings.arshin_max_concurrent_requests
         self.client = httpx.AsyncClient(
             timeout=httpx.Timeout(30.0),  # 30 second timeout
-            limits=httpx.Limits(max_keepalive_connections=5, max_connections=10)
+            limits=httpx.Limits(
+                max_keepalive_connections=max_connections,
+                max_connections=max_connections
+            )
         )
-        self._last_request_time = 0
+        self._request_timestamps: deque[float] = deque()
+        self._rate_lock = asyncio.Lock()
         self.rate_limit_period = settings.arshin_api_rate_period
         self.rate_limit_requests = settings.arshin_api_rate_limit
 
@@ -31,17 +38,24 @@ class ArshinClientService:
 
     async def _rate_limit(self):
         """Implement rate limiting to prevent overloading the external API"""
-        current_time = time.time()
-        time_since_last = current_time - self._last_request_time
+        while True:
+            async with self._rate_lock:
+                now = time.monotonic()
 
-        # Calculate how much time we need to wait to stay within rate limits
-        min_interval = self.rate_limit_period / self.rate_limit_requests
-        if time_since_last < min_interval:
-            wait_time = min_interval - time_since_last
+                # Drop timestamps outside the rate window
+                window_start = now - self.rate_limit_period
+                while self._request_timestamps and self._request_timestamps[0] <= window_start:
+                    self._request_timestamps.popleft()
+
+                if len(self._request_timestamps) < self.rate_limit_requests:
+                    self._request_timestamps.append(now)
+                    return
+
+                wait_time = self.rate_limit_period - (now - self._request_timestamps[0])
+
+            wait_time = max(wait_time, 0.0)
             app_logger.debug(f"Rate limiting: waiting {wait_time:.2f}s")
             await asyncio.sleep(wait_time)
-
-        self._last_request_time = time.time()
 
     async def _make_request_with_retry(self, method: str, url: str, **kwargs) -> Optional[httpx.Response]:
         """
@@ -221,22 +235,43 @@ class ArshinClientService:
             app_logger.error(f"Unexpected error in stage 2 search: {e}")
             return []
 
-    async def get_instrument_by_certificate(self, certificate_number: str, year: int) -> Optional[ArshinRegistryRecord]:
+    async def get_instrument_by_certificate(
+        self,
+        certificate_number: str,
+        year: Optional[int],
+        valid_until_year: Optional[int] = None
+    ) -> Optional[ArshinRegistryRecord]:
         """
         Perform the complete two-stage verification process to get a specific instrument record.
 
         Args:
             certificate_number: The certificate number to search for
-            year: The year to search in
+            year: Known verification year from the source data (if available)
+            valid_until_year: Year extracted from the "valid until" field (if available)
 
         Returns:
             ArshinRegistryRecord if found, None otherwise
         """
         # Stage 1: Search by certificate number and year to get instrument parameters
-        stage1_results = await self.search_by_certificate_and_year(certificate_number, year)
+        stage1_year = year if year is not None else None
+        if stage1_year is None and valid_until_year is not None:
+            stage1_year = max(valid_until_year - 1, 1900)
+        if stage1_year is None:
+            stage1_year = datetime.now().year
+
+        stage1_results = await self.search_by_certificate_and_year(certificate_number, stage1_year)
+
+        # If nothing found and we have an alternative year, attempt a fallback search
+        if not stage1_results and year is not None and year != stage1_year:
+            app_logger.info(
+                f"Stage 1 retry for certificate {certificate_number} using original year {year}"
+            )
+            stage1_results = await self.search_by_certificate_and_year(certificate_number, year)
 
         if not stage1_results:
-            app_logger.info(f"No results found in stage 1 for certificate {certificate_number}, year {year}")
+            app_logger.info(
+                f"No results found in stage 1 for certificate {certificate_number}, attempted years {[stage1_year, year]}"
+            )
             return None
 
         app_logger.info(f"Stage 1 returned {len(stage1_results)} potential matches")
@@ -254,15 +289,62 @@ class ArshinClientService:
         mi_number = selected_record.get('mi_number')
         mi_modification = selected_record.get('mi_modification')  # if available
 
-        # Stage 2: Search by instrument parameters to get the actual verification record
-        stage2_results = await self.search_by_instrument_params(
-            mit_number=mit_number,
-            mit_title=mit_title,
-            mit_notation=mit_notation,
-            mi_modification=mi_modification,
-            mi_number=mi_number,
-            year=year
+        # Stage 2: Search by instrument parameters to get the actual verification record.
+        # Try current year first (for актуальная запись), then fall back to the original year,
+        # and finally attempt the previous year if nothing is found. As a last resort, query without year.
+        current_year = datetime.now().year
+        candidate_years: list[int] = []
+
+        def add_candidate(value: Optional[int]) -> None:
+            if value and value > 1900 and value not in candidate_years:
+                candidate_years.append(value)
+
+        add_candidate(current_year)
+        add_candidate(current_year + 1)
+        add_candidate(current_year - 1)
+        add_candidate(stage1_year)
+        add_candidate(year)
+        if year is not None:
+            add_candidate(year + 1)
+        add_candidate(valid_until_year)
+        if valid_until_year is not None:
+            add_candidate(valid_until_year + 1)
+            add_candidate(valid_until_year - 1)
+
+        app_logger.debug(
+            f"Stage 2 candidate years for certificate {certificate_number}: {candidate_years}"
         )
+
+        stage2_results: list[dict[str, Any]] = []
+        for candidate_year in candidate_years:
+            candidate_results = await self.search_by_instrument_params(
+                mit_number=mit_number,
+                mit_title=mit_title,
+                mit_notation=mit_notation,
+                mi_modification=mi_modification,
+                mi_number=mi_number,
+                year=candidate_year
+            ) or []
+
+            if candidate_results:
+                app_logger.info(
+                    f"Stage 2 search returned {len(candidate_results)} records for certificate {certificate_number} "
+                    f"using year {candidate_year}"
+                )
+                stage2_results.extend(candidate_results)
+
+        if not stage2_results:
+            app_logger.info(
+                f"No stage 2 results with year filter for certificate {certificate_number}, trying without year"
+            )
+            stage2_results = await self.search_by_instrument_params(
+                mit_number=mit_number,
+                mit_title=mit_title,
+                mit_notation=mit_notation,
+                mi_modification=mi_modification,
+                mi_number=mi_number,
+                year=None
+            ) or []
 
         if not stage2_results:
             app_logger.info(f"No results found in stage 2 for certificate {certificate_number}")
@@ -293,7 +375,7 @@ class ArshinClientService:
             record = await self.get_instrument_by_certificate(cert_number, year)
             results[cert_number] = record
             # Small delay to avoid overwhelming the API
-            await asyncio.sleep(0.1)
+            await asyncio.sleep(0.02)
 
         return results
 
@@ -328,10 +410,38 @@ class ArshinClientService:
                         continue
             return None
 
+        # Helper to parse dates embedded in the certificate number (e.g., "С-ГЭШ/31-12-2023/311364910")
+        docnum_date_patterns = [
+            re.compile(r'(\d{2})-(\d{2})-(\d{4})'),
+            re.compile(r'(\d{4})-(\d{2})-(\d{2})'),
+        ]
+
+        def extract_date_from_docnum(record: dict[str, Any]) -> Optional[datetime]:
+            docnum = record.get('result_docnum')
+            if not docnum or not isinstance(docnum, str):
+                return None
+
+            for pattern in docnum_date_patterns:
+                match = pattern.search(docnum)
+                if not match:
+                    continue
+                groups = match.groups()
+                try:
+                    if len(groups[0]) == 4:
+                        year, month, day = groups
+                    else:
+                        day, month, year = groups
+                    return datetime(int(year), int(month), int(day))
+                except ValueError:
+                    continue
+            return None
+
         # Filter records that have valid dates and find the most recent
         records_with_dates = []
         for record in records:
             date = extract_date_from_record(record)
+            if not date:
+                date = extract_date_from_docnum(record)
             if date:
                 records_with_dates.append((record, date))
 

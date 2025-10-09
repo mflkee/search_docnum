@@ -13,6 +13,8 @@ class ExcelRegistryData(BaseModel):
     certificate_number: str
     device_name: Optional[str] = None
     serial_number: Optional[str] = None
+    valid_until_date: Optional[datetime] = None
+    source_row_number: Optional[int] = None
     additional_data: dict = {}
 
     @field_validator('certificate_number')

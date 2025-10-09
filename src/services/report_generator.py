@@ -5,7 +5,7 @@ from typing import Optional
 
 import pandas as pd
 
-from src.models.report import Report
+from src.models.report import ProcessingStatus, Report
 from src.utils.logging_config import app_logger
 
 
@@ -41,6 +41,10 @@ class ReportGeneratorService:
         Returns:
             Path to the generated Excel file
         """
+        is_valid, error_msg = self.validate_report_data(reports)
+        if not is_valid:
+            raise ValueError(f"Invalid report data: {error_msg}")
+
         if not output_path:
             # Generate a default filename with timestamp
             timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
@@ -59,7 +63,7 @@ class ReportGeneratorService:
                     'Заводской номер': report.mi_number or '',
                     'Дата поверки': report.verification_date or '',
                     'Действительна до': report.valid_date or '',
-                    'Номер свидетльства': report.result_docnum or '',
+                    'Номер свидетельства': report.result_docnum or '',
                     'Статус обработки': report.processing_status.value,
                     'Номер строки в исходном файле': report.excel_source_row
                 }
@@ -111,6 +115,10 @@ class ReportGeneratorService:
         Returns:
             Path to the generated Excel file with summary
         """
+        is_valid, error_msg = self.validate_report_data(reports)
+        if not is_valid:
+            raise ValueError(f"Invalid report data: {error_msg}")
+
         if not output_path:
             # Generate a default filename with timestamp
             timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
@@ -119,16 +127,30 @@ class ReportGeneratorService:
         try:
             # Calculate summary statistics
             total_records = len(reports)
-            matched_count = sum(1 for r in reports if r.processing_status == 'MATCHED')
-            not_found_count = sum(1 for r in reports if r.processing_status == 'NOT_FOUND')
-            error_count = sum(1 for r in reports if r.processing_status == 'ERROR')
-            invalid_format_count = sum(1 for r in reports if r.processing_status == 'INVALID_CERT_FORMAT')
+            matched_count = sum(1 for r in reports if r.processing_status == ProcessingStatus.MATCHED)
+            updated_count = sum(
+                1
+                for r in reports
+                if r.processing_status == ProcessingStatus.MATCHED and bool(r.certificate_updated)
+            )
+            unchanged_count = sum(
+                1
+                for r in reports
+                if r.processing_status == ProcessingStatus.MATCHED and r.certificate_updated is False
+            )
+            not_found_count = sum(1 for r in reports if r.processing_status == ProcessingStatus.NOT_FOUND)
+            error_count = sum(1 for r in reports if r.processing_status == ProcessingStatus.ERROR)
+            invalid_format_count = sum(
+                1 for r in reports if r.processing_status == ProcessingStatus.INVALID_CERT_FORMAT
+            )
 
             # Create summary data
             summary_data = {
                 'Статистика': [
                     'Всего записей',
                     'Найдено в Аршине',
+                    'Обновлено номер свидетельства',
+                    'Без изменений',
                     'Не найдено в Аршине',
                     'С ошибками',
                     'С недействительным форматом сертификата',
@@ -137,6 +159,8 @@ class ReportGeneratorService:
                 'Значение': [
                     total_records,
                     matched_count,
+                    updated_count,
+                    unchanged_count,
                     not_found_count,
                     error_count,
                     invalid_format_count,
@@ -159,9 +183,8 @@ class ReportGeneratorService:
                 # Also include the detailed results in a second sheet
                 if reports:
                     # Convert Report objects to a list of dictionaries for pandas
-                    report_data = []
-                    for report in reports:
-                        row = {
+                    report_data = [
+                        {
                             'ID в Аршине': report.arshin_id or '',
                             'Организация-поверитель': report.org_title or '',
                             'Регистрационный номер типа СИ': report.mit_number or '',
@@ -174,7 +197,8 @@ class ReportGeneratorService:
                             'Статус обработки': report.processing_status.value,
                             'Номер строки в исходном файле': report.excel_source_row
                         }
-                        report_data.append(row)
+                        for report in reports
+                    ]
 
                     # Write detailed report to second sheet
                     detailed_df = pd.DataFrame(report_data, columns=self.report_columns)
@@ -218,6 +242,8 @@ class ReportGeneratorService:
                 return True, "No reports to validate, which is acceptable"
 
             for i, report in enumerate(reports):
+                if not isinstance(report, Report):
+                    return False, f"Item at index {i} is not a Report instance"
                 if not hasattr(report, 'processing_status'):
                     return False, f"Report at index {i} is missing processing_status"
 

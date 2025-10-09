@@ -1,5 +1,5 @@
 import re
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Optional
 
 
@@ -40,13 +40,14 @@ def parse_verification_date(date_str: str) -> Optional[datetime]:
         "%m/%d/%Y",  # MM/DD/YYYY
         "%d.%m.%y",  # DD.MM.YY (for 2-digit years if needed)
         "%Y/%m/%d",  # YYYY/MM/DD
+        "%Y-%m-%d %H:%M:%S",
+        "%d.%m.%Y %H:%M:%S",
     ]
 
     for fmt in date_formats:
         try:
             parsed_date = datetime.strptime(date_str, fmt)
-            # Make the datetime timezone-aware using UTC timezone
-            return parsed_date.replace(tzinfo=timezone.utc)
+            return parsed_date
         except ValueError:
             continue
 
@@ -57,8 +58,7 @@ def parse_verification_date(date_str: str) -> Optional[datetime]:
         try:
             day, month, year = match.groups()
             parsed_date = datetime(int(year), int(month), int(day))
-            # Make the datetime timezone-aware using UTC timezone
-            return parsed_date.replace(tzinfo=timezone.utc)
+            return parsed_date
         except ValueError:
             pass
 
@@ -68,8 +68,7 @@ def parse_verification_date(date_str: str) -> Optional[datetime]:
         try:
             year, month, day = match.groups()
             parsed_date = datetime(int(year), int(month), int(day))
-            # Make the datetime timezone-aware using UTC timezone
-            return parsed_date.replace(tzinfo=timezone.utc)
+            return parsed_date
         except ValueError:
             pass
 

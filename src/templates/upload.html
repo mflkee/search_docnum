@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+
+{% block title %}Upload - Arshin Registry Synchronization System{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-md-8">
+        <div class="card">
+            <div class="card-header">
+                <h3>Upload Excel File for Processing</h3>
+            </div>
+            <div class="card-body">
+                <form id="uploadForm" enctype="multipart/form-data">
+                    <div class="mb-3">
+                        <label for="file" class="form-label">Select Excel File</label>
+                        <input type="file" class="form-control" id="file" name="file" accept=".xlsx,.xls" required>
+                        <div class="form-text">Supported formats: .xlsx, .xls. Maximum file size: 100MB.</div>
+                    </div>
+                    
+                    <div class="accordion mb-3" id="advancedOptions">
+                        <div class="accordion-item">
+                            <h2 class="accordion-header" id="headingOne">
+                                <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#collapseOne" aria-expanded="false" aria-controls="collapseOne">
+                                    Advanced Column Settings
+                                </button>
+                            </h2>
+                            <div id="collapseOne" class="accordion-collapse collapse" aria-labelledby="headingOne" data-bs-parent="#advancedOptions">
+                                <div class="accordion-body">
+                                    <div class="mb-3">
+                                        <label for="verificationDateColumn" class="form-label">Verification Date Column</label>
+                                        <input type="text" class="form-control" id="verificationDateColumn" name="verification_date_column" value="Дата поверки" placeholder="Column name or identifier (e.g., AE, Дата поверки)">
+                                        <div class="form-text">Default: "Дата поверки". Can be column name or Excel column letter (e.g., AE).</div>
+                                    </div>
+                                    <div class="mb-3">
+                                        <label for="certificateNumberColumn" class="form-label">Certificate Number Column</label>
+                                        <input type="text" class="form-control" id="certificateNumberColumn" name="certificate_number_column" value="Наличие документа с отметкой о поверке (№ св-ва о поверке)" placeholder="Column name or identifier (e.g., AI, Наличие документа с отметкой о поверке (№ св-ва о поверке))">
+                                        <div class="form-text">Default: "Наличие документа с отметкой о поверке (№ св-ва о поверке)". Can be column name or Excel column letter (e.g., AI).</div>
+                                    </div>
+                                    <div class="mb-3">
+                                        <label for="sheetName" class="form-label">Sheet Name</label>
+                                        <input type="text" class="form-control" id="sheetName" name="sheet_name" value="Перечень" placeholder="Sheet name (e.g., Перечень, List, Main)">
+                                        <div class="form-text">Default: "Перечень". The name of the Excel sheet to process.</div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <button type="submit" class="btn btn-primary" id="uploadBtn">Upload and Process</button>
+                    <div class="mt-3" id="uploadProgress" style="display: none;">
+                        <div class="progress">
+                            <div class="progress-bar" role="progressbar" style="width: 0%"></div>
+                        </div>
+                        <div class="mt-2">Uploading... <span id="progressText">0%</span></div>
+                    </div>
+                </form>
+                
+                <div class="mt-4" id="resultDiv" style="display: none;">
+                    <h5>Upload Successful!</h5>
+                    <p>Your file has been uploaded and processing has started.</p>
+                    <p><strong>Task ID:</strong> <span id="taskId"></span></p>
+                    <p>Check the status of your processing <a href="#" id="statusLink">here</a>.</p>
+                </div>
+                
+                <div class="mt-4" id="errorDiv" class="alert alert-danger" style="display: none;">
+                    <h5>Error</h5>
+                    <p id="errorMessage"></p>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Drag and drop overlay -->
+<div id="dropZone" class="drop-overlay" style="display: none;">
+    <div class="drop-content">
+        <h3>Drop your Excel file here</h3>
+        <p>or click to browse</p>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/js/upload.js"></script>
+{% endblock %}

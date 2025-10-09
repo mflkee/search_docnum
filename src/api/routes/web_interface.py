@@ -119,9 +119,19 @@ async def get_task_status_for_web(task_id: str):
 
     task = active_tasks[task_id]
 
-    return {
+    dataset_available = bool(task.preview_path and os.path.exists(task.preview_path))
+    result_available = bool(task.result_path and os.path.exists(task.result_path))
+
+    payload = {
         "status": task.status.value,
         "progress": task.progress,
         "completed_at": task.completed_at.isoformat() if task.completed_at else None,
-        "error_message": task.error_message
+        "error_message": task.error_message if task.status == ProcessingTaskStatus.FAILED else None,
+        "dataset_available": dataset_available,
+        "result_available": result_available,
+        "summary": task.summary or {},
+        "processed_records": task.processed_records if task.processed_records is not None else 0,
+        "total_records": task.total_records if task.total_records is not None else 0,
     }
+
+    return payload

@@ -106,7 +106,6 @@
   let tableInitialized = false;
   let datasetLoaded = false;
   let datasetLoading = false;
-  let datasetLoading = false;
 
   const initialSummary = safeParseJSON(root.dataset.summary) || {};
   hydrateSummary(initialSummary);

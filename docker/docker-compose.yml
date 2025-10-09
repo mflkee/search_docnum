@@ -1,29 +1,14 @@
-version: '3.8'
-
 services:
-  web:
+  app:
     build:
-      context: ..
-      dockerfile: docker/Dockerfile
-    ports:
-      - "8000:8000"
-    volumes:
-      - ./uploads:/app/uploads
-      - ./results:/app/results
-      - ./logs:/app/logs
+      context: .
+      dockerfile: Dockerfile
+    image: search-docnum:latest
+    command: python -m search_docnum
     environment:
-      - ARSHIN_API_BASE_URL=https://fgis.gost.ru/fundmetrology/eapi
-      - CELERY_BROKER_URL=redis://redis:6379
-      - CELERY_RESULT_BACKEND=redis://redis:6379
-    depends_on:
-      - redis
-
-  redis:
-    image: redis:7-alpine
-    ports:
-      - "6379:6379"
+      PYTHONUNBUFFERED: "1"
     volumes:
-      - redis_data:/data
+      - ./:/app
+    init: true
+    restart: "no"
 
-volumes:
-  redis_data:

@@ -1,34 +1,23 @@
-# Use official Python runtime as a parent image
-FROM python:3.11-slim
+# syntax=docker/dockerfile:1.6
 
-# Set environment variables
-ENV PYTHONDONTWRITEBYTECODE 1
-ENV PYTHONUNBUFFERED 1
+FROM python:3.12-slim AS base
 
-# Set work directory
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=0 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_ROOT_USER_ACTION=ignore
+
 WORKDIR /app
 
-# Install system dependencies
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-        build-essential \
-        libmagic-dev \
+    && apt-get install -y --no-install-recommends build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Python dependencies via uv
-RUN pip install --no-cache-dir uv
+COPY . .
 
-COPY requirements/base.txt /app/requirements/base.txt
-RUN uv pip install --system --no-cache -r requirements/base.txt
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --upgrade pip setuptools wheel \
+    && pip install .
 
-# Copy project
-COPY . /app/
-
-# Create necessary directories
-RUN mkdir -p uploads results logs
-
-# Expose port
-EXPOSE 8000
-
-# Run the application through uv (ensures consistent environment)
-CMD ["uv", "run", "uvicorn", "src.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["python", "-m", "search_docnum"]

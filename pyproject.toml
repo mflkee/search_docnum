@@ -1,7 +1,78 @@
+[tool.black]
+line-length = 88
+target-version = ['py311']
+include = '\.pyi?$'
+extend-exclude = '''
+/(
+  # directories
+  \.eggs
+  | \.git
+  | \.venv
+  | build
+  | dist
+)/
+'''
+
+[tool.isort]
+profile = "black"
+multi_line_output = 3
+known_first_party = ["src"]
+known_third_party = ["fastapi", "pandas", "httpx", "celery", "Jinja2", "uvicorn", "python-multipart", "loguru", "pydantic", "redis", "pytest", "responses"]
+
+[tool.flake8]
+max-line-length = 88
+extend-ignore = ['E203', 'W503']
+max-complexity = 10
+
 [project]
-name = "searcharshin"
+name = "si-registry-processor"
 version = "0.1.0"
-description = "Add your description here"
-readme = "README.md"
-requires-python = ">=3.13"
-dependencies = []
+description = "SI Registry synchronization with Arshin API"
+authors = [
+    {name = "Developer", email = "dev@example.com"},
+]
+
+dependencies = [
+    "fastapi>=0.104.0",
+    "uvicorn[standard]>=0.24.0",
+    "pandas>=2.1.0",
+    "openpyxl>=3.1.0",
+    "httpx>=0.25.0",
+    "pydantic>=2.4.0",
+    "python-multipart>=0.0.6",
+    "loguru>=0.7.0",
+    "Jinja2>=3.1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-asyncio>=0.21.0",
+    "pytest-cov>=4.1.0",
+    "responses>=0.24.0",
+    "black>=23.0.0",
+    "isort>=5.12.0",
+    "flake8>=6.0.0",
+    "ruff>=0.5.0",
+]
+
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.ruff]
+# Enable the same rules as the default configuration
+select = ["E", "F", "W", "C9", "I", "N", "UP", "B", "SIM", "ARG", "C4", "DTZ", "G", "PIE", "PL", "PT", "PYI", "RUF", "S", "TID", "UP", "W", "EXE", "PGH", "PL", "PT", "TRY"]
+ignore = [
+    "E402",  # Module level import not at top of file - needed for circular import workaround
+]
+
+# Exclude specific files/dirs
+extend-ignore = [
+    # Add any other specific rules to ignore if needed
+]
+
+line-length = 88
+
+[tool.ruff.per-file-ignores]
+"src/api/main.py" = ["E402"]

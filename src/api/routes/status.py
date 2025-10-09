@@ -40,7 +40,9 @@ async def get_task_status(task_id: str) -> dict[str, Any]:
             "dataset_available": task.status == ProcessingTaskStatus.COMPLETED and task.preview_path is not None,
             "created_at": task.created_at.isoformat() if task.created_at else None,
             "completed_at": task.completed_at.isoformat() if task.completed_at else None,
-            "summary": task.summary or {}
+            "summary": task.summary or {},
+            "processed_records": task.processed_records,
+            "total_records": task.total_records,
         }
 
         # Include error message if task failed

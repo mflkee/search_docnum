@@ -1,5 +1,15 @@
 /* Custom styles for Arshin Registry Synchronization System */
 
+body {
+    background-color: #0b1016;
+    color: #e2e8f0;
+    font-family: "Segoe UI", "Roboto", "Helvetica Neue", Arial, sans-serif;
+}
+
+.container {
+    max-width: 1280px;
+}
+
 /* Upload page styles */
 .drop-overlay {
     position: fixed;
@@ -165,7 +175,6 @@
 /* Results page */
 .results-wrapper {
     background-color: #11161d;
-    color: #e2e8f0;
     padding: 2rem;
     border-radius: 16px;
     box-shadow: 0 20px 45px rgba(7, 12, 20, 0.55);
@@ -200,6 +209,7 @@
 .results-actions {
     display: flex;
     gap: 0.75rem;
+    flex-wrap: wrap;
 }
 
 .summary-grid {
@@ -264,6 +274,71 @@
     color: rgba(226, 232, 240, 0.85);
 }
 
+.progress-panel {
+    background: rgba(15, 23, 42, 0.75);
+    border: 1px solid rgba(71, 85, 105, 0.35);
+    border-radius: 14px;
+    padding: 1.25rem 1.5rem;
+    margin-bottom: 1.75rem;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+.progress-meta {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 0.75rem;
+}
+
+.progress-status {
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: rgba(148, 163, 184, 0.9);
+}
+
+.progress-tally {
+    font-size: 0.85rem;
+    color: rgba(148, 163, 184, 0.85);
+}
+
+.progress-status[data-status="COMPLETED"] {
+    color: #34d399;
+}
+
+.progress-status[data-status="FAILED"] {
+    color: #f87171;
+}
+
+.progress-status[data-status="PENDING"],
+.progress-status[data-status="PROCESSING"] {
+    color: #60a5fa;
+}
+
+.progress-tally[data-status="COMPLETED"] {
+    color: #34d399;
+}
+
+.progress-tally[data-status="FAILED"] {
+    color: #f87171;
+}
+
+.progress-tally[data-status="PENDING"],
+.progress-tally[data-status="PROCESSING"] {
+    color: rgba(96, 165, 250, 0.85);
+}
+
+.progress-value {
+    font-weight: 600;
+    color: #e2e8f0;
+}
+
+.progress-error {
+    margin-top: 0.75rem;
+    color: #fca5a5;
+    font-size: 0.95rem;
+}
+
 .results-table-container {
     position: relative;
     max-height: 65vh;
@@ -276,8 +351,9 @@
     width: 100%;
     border-collapse: separate;
     border-spacing: 0;
-    min-width: 900px;
+    min-width: 1200px;
     color: inherit;
+    font-size: 0.85rem;
 }
 
 .results-table thead th {
@@ -341,9 +417,10 @@
 }
 
 .results-table tbody td {
-    padding: 0.75rem 1rem;
+    padding: 0.65rem 0.9rem;
     border-bottom: 1px solid rgba(71, 85, 105, 0.25);
     vertical-align: middle;
+    font-size: 0.82rem;
 }
 
 .results-table tbody tr:nth-of-type(odd) {

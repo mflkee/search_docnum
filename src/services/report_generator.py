@@ -17,18 +17,40 @@ class ReportGeneratorService:
     def __init__(self):
         # Define the required columns for the output report
         self.report_columns = [
-            'ID в Аршине',           # vri_id
-            'Организация-поверитель',  # org_title
-            'Регистрационный номер типа СИ',  # mit_number
-            'Наименование типа СИ',    # mit_title
-            'Обозначение типа СИ',     # mit_notation
-            'Заводской номер',        # mi_number
-            'Дата поверки',           # verification_date
-            'Действительна до',       # valid_date
-            'Номер свидетельства',    # result_docnum
-            'Статус обработки',       # processing_status
-            'Номер строки в исходном файле'  # excel_source_row
+            'ID в Аршине',
+            'Организация-поверитель',
+            'Регистрационный номер типа СИ',
+            'Наименование типа СИ',
+            'Обозначение типа СИ',
+            'Заводской номер',
+            'Дата поверки',
+            'Действительна до',
+            'Номер свидетельства',
+            'Статус записи',
+            'Номер строки в исходном файле'
         ]
+
+    @staticmethod
+    def _status_kind(report: Report) -> str:
+        if report.processing_status == ProcessingStatus.NOT_FOUND:
+            return "not_found"
+        if report.processing_status == ProcessingStatus.ERROR:
+            return "error"
+        if report.processing_status == ProcessingStatus.INVALID_CERT_FORMAT:
+            return "invalid"
+        if report.processing_status == ProcessingStatus.MATCHED and bool(report.certificate_updated):
+            return "updated"
+        return "unchanged"
+
+    def _status_label(self, report: Report) -> str:
+        mapping = {
+            "updated": "Обновлено",
+            "unchanged": "Без изменений",
+            "not_found": "Не найдено",
+            "error": "Ошибка",
+            "invalid": "Некорректный формат",
+        }
+        return mapping.get(self._status_kind(report), report.processing_status.value)
 
     def generate_report(self, reports: list[Report], output_path: Optional[str] = None) -> str:
         """
@@ -64,7 +86,7 @@ class ReportGeneratorService:
                     'Дата поверки': report.verification_date or '',
                     'Действительна до': report.valid_date or '',
                     'Номер свидетельства': report.result_docnum or '',
-                    'Статус обработки': report.processing_status.value,
+                    'Статус записи': self._status_label(report),
                     'Номер строки в исходном файле': report.excel_source_row
                 }
                 report_data.append(row)
@@ -83,6 +105,8 @@ class ReportGeneratorService:
 
                 # Get the workbook and worksheet to adjust column widths
                 worksheet = writer.sheets['Results']
+                worksheet.freeze_panes = worksheet['A2']
+                worksheet.auto_filter.ref = worksheet.dimensions
 
                 # Adjust column widths for better readability
                 for column in worksheet.columns:
@@ -127,29 +151,19 @@ class ReportGeneratorService:
         try:
             # Calculate summary statistics
             total_records = len(reports)
-            matched_count = sum(1 for r in reports if r.processing_status == ProcessingStatus.MATCHED)
-            updated_count = sum(
-                1
-                for r in reports
-                if r.processing_status == ProcessingStatus.MATCHED and bool(r.certificate_updated)
-            )
-            unchanged_count = sum(
-                1
-                for r in reports
-                if r.processing_status == ProcessingStatus.MATCHED and r.certificate_updated is False
-            )
-            not_found_count = sum(1 for r in reports if r.processing_status == ProcessingStatus.NOT_FOUND)
-            error_count = sum(1 for r in reports if r.processing_status == ProcessingStatus.ERROR)
-            invalid_format_count = sum(
-                1 for r in reports if r.processing_status == ProcessingStatus.INVALID_CERT_FORMAT
-            )
+            updated_count = sum(1 for r in reports if self._status_kind(r) == 'updated')
+            unchanged_count = sum(1 for r in reports if self._status_kind(r) == 'unchanged')
+            not_found_count = sum(1 for r in reports if self._status_kind(r) == 'not_found')
+            error_count = sum(1 for r in reports if self._status_kind(r) == 'error')
+            invalid_format_count = sum(1 for r in reports if self._status_kind(r) == 'invalid')
+            found_total = total_records - not_found_count - error_count - invalid_format_count
 
             # Create summary data
             summary_data = {
                 'Статистика': [
                     'Всего записей',
                     'Найдено в Аршине',
-                    'Обновлено номер свидетельства',
+                    'Обновлено',
                     'Без изменений',
                     'Не найдено в Аршине',
                     'С ошибками',
@@ -158,13 +172,13 @@ class ReportGeneratorService:
                 ],
                 'Значение': [
                     total_records,
-                    matched_count,
+                    found_total,
                     updated_count,
                     unchanged_count,
                     not_found_count,
                     error_count,
                     invalid_format_count,
-                    f"{(matched_count/total_records*100):.2f}%" if total_records > 0 else "0%"
+                    f"{(found_total/total_records*100):.2f}%" if total_records > 0 else "0%"
                 ]
             }
 
@@ -180,6 +194,10 @@ class ReportGeneratorService:
             with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
                 summary_df.to_excel(writer, index=False, sheet_name='Summary')
 
+                summary_ws = writer.sheets['Summary']
+                summary_ws.freeze_panes = summary_ws['A2']
+                summary_ws.auto_filter.ref = summary_ws.dimensions
+
                 # Also include the detailed results in a second sheet
                 if reports:
                     # Convert Report objects to a list of dictionaries for pandas
@@ -194,7 +212,7 @@ class ReportGeneratorService:
                             'Дата поверки': report.verification_date or '',
                             'Действительна до': report.valid_date or '',
                             'Номер свидетельства': report.result_docnum or '',
-                            'Статус обработки': report.processing_status.value,
+                            'Статус записи': self._status_label(report),
                             'Номер строки в исходном файле': report.excel_source_row
                         }
                         for report in reports
@@ -206,6 +224,8 @@ class ReportGeneratorService:
 
                     # Format the detailed results sheet
                     detailed_worksheet = writer.sheets['Detailed Results']
+                    detailed_worksheet.freeze_panes = detailed_worksheet['A2']
+                    detailed_worksheet.auto_filter.ref = detailed_worksheet.dimensions
 
                     # Adjust column widths for better readability
                     for column in detailed_worksheet.columns:

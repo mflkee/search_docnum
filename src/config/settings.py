@@ -18,9 +18,9 @@ class Settings(BaseSettings):
     task_timeout: int = 300  # 5 minutes in seconds
 
     # Rate limiting for Arshin API
-    arshin_api_rate_limit: int = 120  # requests per minute
+    arshin_api_rate_limit: int = 240  # requests per minute
     arshin_api_rate_period: int = 60  # seconds
-    arshin_max_concurrent_requests: int = 20  # simultaneous API requests
+    arshin_max_concurrent_requests: int = 60  # simultaneous API requests
 
     # Celery settings (if used)
     celery_broker_url: str = "redis://localhost:6379"

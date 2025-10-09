@@ -176,7 +176,18 @@ async def process_file_background(
             sheet_name
         )
 
-        statistics = data_processor.compute_processing_statistics(reports)
+        statistics = data_processor._compute_processing_statistics(reports)
+        task.summary = {
+            "processed": statistics.get("processed", 0),
+            "updated": statistics.get("updated", 0),
+            "unchanged": statistics.get("unchanged", 0),
+            "not_found": statistics.get("not_found", 0),
+            "errors": statistics.get("errors", 0),
+            "invalid_format": statistics.get("invalid_format", 0),
+        }
+        task.processed_records = statistics.get("processed", 0)
+        if task.total_records is None:
+            task.total_records = statistics.get("processed", 0)
 
         # Persist dataset preview for UI consumption
         dataset_payload = {

@@ -7,30 +7,59 @@
      data-results-root="true"
      data-task-id="{{ task_id }}"
      data-dataset-url="{{ dataset_url if dataset_url else '' }}"
-     data-download-url="{{ download_url if download_url else '' }}"
-     data-summary='{{ summary | tojson }}'>
-    {% if error %}
-    <div class="alert alert-danger">
-        <h4 class="mb-2">Не удалось сформировать результат</h4>
-        <p class="mb-3">{{ error }}</p>
-        <a href="/" class="btn btn-outline-light">Вернуться к загрузке</a>
-    </div>
-    {% else %}
+     data-default-dataset-url="{{ default_dataset_url if default_dataset_url else '' }}"
+     data-default-download-url="{{ default_download_url if default_download_url else '' }}"
+     data-status-url="{{ status_url if status_url else '' }}"
+     data-status="{{ status_value if status_value else '' }}"
+     data-progress="{{ progress if progress is not none else 0 }}"
+     data-summary='{{ summary | tojson }}'
+     data-processed='{{ processed_records or 0 }}'
+     data-total='{{ total_records or 0 }}'>
     <header class="results-head">
         <div>
-            <h2 class="mb-1">Обработка завершена</h2>
+            <h2 class="mb-1">Статус обработки</h2>
             <p class="text-muted mb-0">Задача <span class="fw-semibold">{{ task_id }}</span></p>
         </div>
         <div class="results-actions">
-            <a href="{{ download_url }}" class="btn btn-success" download>
+            <a id="downloadLink"
+               class="btn btn-success{% if not download_url %} disabled{% endif %}"
+               {% if download_url %}
+               href="{{ download_url }}"
+               download
+               {% else %}
+               href="#"
+               role="button"
+               aria-disabled="true"
+               {% endif %}
+               data-download-href="{{ default_download_url }}">
                 Скачать Excel
             </a>
             <a href="/" class="btn btn-outline-light">Новая загрузка</a>
         </div>
     </header>
 
-    {% if dataset_available %}
-    <section class="table-panel" aria-label="Сводная таблица результатов">
+    {% if error and status_value == 'NOT_FOUND' %}
+    <div class="alert alert-danger mb-0">
+        <h4 class="mb-2">Не удалось найти задачу</h4>
+        <p class="mb-3">{{ error }}</p>
+        <a href="/" class="btn btn-outline-light">Вернуться к загрузке</a>
+    </div>
+    {% else %}
+    <section class="progress-panel" id="progressPanel" {% if completed %}hidden{% endif %}>
+        <div class="progress-meta">
+            <span id="statusLabel" class="progress-status">{{ status_value }}</span>
+            <span id="progressDetailed" class="progress-tally">{{ processed_records or 0 }}{% if total_records %} / {{ total_records }}{% endif %}</span>
+            <span id="progressLabel" class="progress-value">{{ progress }}%</span>
+        </div>
+        <div class="progress">
+            <div id="progressBar" class="progress-bar" role="progressbar" style="width: {{ progress }}%"></div>
+        </div>
+        {% if error and status_value == 'FAILED' %}
+        <p class="progress-error">{{ error }}</p>
+        {% endif %}
+    </section>
+
+    <section class="table-panel" id="tablePanel" aria-label="Сводная таблица результатов" {% if not dataset_available %}hidden{% endif %}>
         <div class="table-toolbar">
             <div class="toolbar-left">
                 <button class="btn btn-outline-light btn-sm" id="resetTableBtn" type="button"
@@ -54,11 +83,17 @@
             </div>
         </div>
     </section>
-    {% else %}
+
+    {% if not dataset_available and not completed %}
     <div class="alert alert-info mt-4">
-        <p class="mb-0">Предпросмотр набора данных недоступен, но Excel-файл можно скачать по кнопке выше.</p>
+        <p class="mb-0">Таблица появится автоматически после завершения обработки.</p>
+    </div>
+    {% elif not dataset_available and completed %}
+    <div class="alert alert-warning mt-4">
+        <p class="mb-0">Предпросмотр недоступен. Используйте скачивание Excel.</p>
     </div>
     {% endif %}
+
     <section class="summary-grid" id="summaryCards">
         <article class="summary-card" data-summary-key="processed">
             <h3>Всего</h3>
@@ -82,7 +117,7 @@
 {% endblock %}
 
 {% block scripts %}
-{% if not error and dataset_available %}
+{% if not (error and status_value == 'NOT_FOUND') %}
 <script src="/static/js/results-table.js"></script>
 {% endif %}
 {% endblock %}

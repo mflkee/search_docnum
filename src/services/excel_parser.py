@@ -30,6 +30,15 @@ class ExcelParserService:
             "номер свидетельства",
             "certificate number",
         ]
+        self.valid_until_aliases = [
+            "действительна до",
+            "дата окончания поверки",
+            "срок действия",
+            "valid until",
+            "valid_to",
+            "valid date",
+            "окончание поверки",
+        ]
 
     def _find_sheet_by_name(self, available_sheets, target_sheet_name):
         """
@@ -209,6 +218,7 @@ class ExcelParserService:
         # Locate columns based on identifiers / headers
         verification_date_col_idx = None
         certificate_number_col_idx = None
+        valid_until_col_idx = None
 
         app_logger.info(
             f"Looking for columns: verification_date='{verification_date_column}', "
@@ -256,6 +266,22 @@ class ExcelParserService:
             if certificate_number_col_idx is not None:
                 app_logger.info(
                     f"Selected certificate number column at index {certificate_number_col_idx}: '{df.columns[certificate_number_col_idx]}'"
+                )
+
+        if valid_until_col_idx is None:
+            valid_until_col_idx = self._find_column_index(
+                df,
+                "Действительна до",
+                self.valid_until_aliases,
+                keyword_groups=[
+                    ["действительна", "до"],
+                    ["дата", "окончания", "поверки"],
+                    ["valid", "until"],
+                ],
+            )
+            if valid_until_col_idx is not None:
+                app_logger.info(
+                    f"Selected valid-until column at index {valid_until_col_idx}: '{df.columns[valid_until_col_idx]}'"
                 )
 
         # If columns still not found, raise an error
@@ -323,6 +349,22 @@ class ExcelParserService:
                     app_logger.warning(f"Could not parse verification date in row {excel_row_number}, value: {verification_date_val}")
                     continue  # Skip this row if we can't parse the date
 
+                # Parse valid-until date when available
+                valid_until_date = None
+                if valid_until_col_idx is not None and valid_until_col_idx < len(row):
+                    valid_until_val = row.iloc[valid_until_col_idx]
+                    if pd.notna(valid_until_val):
+                        if isinstance(valid_until_val, pd.Timestamp):
+                            valid_until_date = valid_until_val.to_pydatetime()
+                        elif isinstance(valid_until_val, datetime):
+                            valid_until_date = valid_until_val
+                        else:
+                            parsed_valid_until = parse_verification_date(str(valid_until_val))
+                            if parsed_valid_until:
+                                valid_until_date = parsed_valid_until
+                        if valid_until_date and valid_until_date.tzinfo is not None:
+                            valid_until_date = valid_until_date.replace(tzinfo=None)
+
                 # Get certificate number and convert to string
                 # Handle pandas NaN values properly
                 if pd.isna(certificate_number_val):
@@ -363,6 +405,7 @@ class ExcelParserService:
                     certificate_number=certificate_number,
                     device_name=device_name,
                     serial_number=serial_number,
+                    valid_until_date=valid_until_date,
                     source_row_number=excel_row_number,
                     additional_data=additional_data
                 )

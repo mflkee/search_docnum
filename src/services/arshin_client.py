@@ -152,7 +152,7 @@ class ArshinClientService:
                 "result_docnum": certificate_number
             }
 
-            app_logger.info(f"Searching Arshin API (stage 1) with params: {params}")
+            app_logger.debug(f"Searching Arshin API (stage 1) with params: {params}")
 
             response = await self._make_request_with_retry('GET', url, params=params)
 
@@ -235,7 +235,7 @@ class ArshinClientService:
             if year:
                 params["year"] = str(year)
 
-            app_logger.info(f"Searching Arshin API (stage 2) with params: {params}")
+            app_logger.debug(f"Searching Arshin API (stage 2) with params: {params}")
 
             response = await self._make_request_with_retry('GET', url, params=params)
 
@@ -317,7 +317,7 @@ class ArshinClientService:
             )
             return None
 
-        app_logger.info(f"Stage 1 returned {len(stage1_results)} potential matches")
+        app_logger.debug(f"Stage 1 returned {len(stage1_results)} potential matches")
 
         # If multiple records are found, select the most recent one
         selected_record = self._select_most_recent_record(stage1_results)
@@ -386,7 +386,7 @@ class ArshinClientService:
 
             if candidate_results:
                 stage2_results = candidate_results
-                app_logger.info(
+                app_logger.debug(
                     f"Stage 2 search returned {len(candidate_results)} records for certificate {certificate_number} "
                     f"using year {candidate_year}"
                 )

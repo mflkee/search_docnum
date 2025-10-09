@@ -4,42 +4,56 @@
     return;
   }
 
-  const datasetUrl = root.dataset.datasetUrl;
-  if (!datasetUrl) {
-    console.warn('Dataset url is not provided for results preview');
-    return;
-  }
+  const taskId = root.dataset.taskId || '';
+  const defaultDatasetUrl = root.dataset.defaultDatasetUrl || '';
+  const defaultDownloadUrl = root.dataset.defaultDownloadUrl || '';
+  const statusUrl = root.dataset.statusUrl || '';
+  let datasetUrl = root.dataset.datasetUrl || '';
+  let currentStatus = root.dataset.status || 'PENDING';
+  let currentProgress = Number(root.dataset.progress || 0);
+  let processedRecords = Number(root.dataset.processed || 0);
+  let totalRecords = Number(root.dataset.total || 0);
 
-  const summaryData = safeParseJSON(root.dataset.summary) || {};
-  const visibleCounter = document.getElementById('visibleCount');
-  const summaryNodes = {
-    processed: document.getElementById('summaryTotal'),
-    updated: document.getElementById('summaryUpdated'),
-    unchanged: document.getElementById('summaryUnchanged'),
-    not_found: document.getElementById('summaryMissing'),
+  const STATUS_LABELS = {
+    PENDING: 'В очереди',
+    PROCESSING: 'Обработка',
+    COMPLETED: 'Готово',
+    FAILED: 'Ошибка',
+    NOT_FOUND: 'Не найдена',
   };
+
+  const ARSHIN_BASE_URL = 'https://fgis.gost.ru/fundmetrology/cm/results/';
+
+  const progressPanel = document.getElementById('progressPanel');
+  const progressBar = document.getElementById('progressBar');
+  const progressLabel = document.getElementById('progressLabel');
+  const statusLabelNode = document.getElementById('statusLabel');
+  const tablePanel = document.getElementById('tablePanel');
+  const downloadLink = document.getElementById('downloadLink');
+  const downloadHref = downloadLink ? downloadLink.dataset.downloadHref || defaultDownloadUrl : defaultDownloadUrl;
+  const visibleCounter = document.getElementById('visibleCount');
+  const progressDetailed = document.getElementById('progressDetailed');
   const headerRow = document.getElementById('resultsHeaderRow');
   const filterRow = document.getElementById('resultsFilterRow');
   const tableBody = document.getElementById('resultsTableBody');
   const emptyState = document.getElementById('emptyState');
   const resetBtn = document.getElementById('resetTableBtn');
 
+  const summaryNodes = {
+    processed: document.getElementById('summaryTotal'),
+    updated: document.getElementById('summaryUpdated'),
+    unchanged: document.getElementById('summaryUnchanged'),
+    not_found: document.getElementById('summaryMissing'),
+  };
+
   const STATUS_CONFIG = {
     updated: { label: 'Обновлено', className: 'status-chip status-chip--updated', rank: 0 },
     unchanged: { label: 'Без изменений', className: 'status-chip status-chip--unchanged', rank: 1 },
     not_found: { label: 'Не найдено', className: 'status-chip status-chip--missing', rank: 2 },
   };
-  const ARSHIN_BASE_URL = 'https://fgis.gost.ru/fundmetrology/cm/results/';
 
   const columns = [
-    {
-      key: 'excel_source_row',
-      label: 'Строка',
-      type: 'number',
-      align: 'right',
-      sortable: true,
-      filterable: true,
-    },
+    { key: 'excel_source_row', label: 'Строка', type: 'number', align: 'right', sortable: true, filterable: true },
     {
       key: 'statusLabel',
       label: 'Статус',
@@ -49,49 +63,12 @@
       render: renderStatusCell,
       sortAccessor: record => STATUS_CONFIG[record.statusKind]?.rank ?? 99,
     },
-    {
-      key: 'result_docnum',
-      label: 'Номер свидетельства',
-      type: 'text',
-      sortable: true,
-      filterable: true,
-    },
-    {
-      key: 'arshin_id',
-      label: 'ID в Аршине',
-      type: 'link',
-      sortable: true,
-      filterable: true,
-      render: renderArshinLinkCell,
-    },
-    {
-      key: 'mit_title',
-      label: 'Наименование типа СИ',
-      type: 'text',
-      sortable: true,
-      filterable: true,
-    },
-    {
-      key: 'mit_notation',
-      label: 'Обозначение',
-      type: 'text',
-      sortable: true,
-      filterable: true,
-    },
-    {
-      key: 'org_title',
-      label: 'Организация',
-      type: 'text',
-      sortable: true,
-      filterable: true,
-    },
-    {
-      key: 'mi_number',
-      label: 'Заводской номер',
-      type: 'text',
-      sortable: true,
-      filterable: true,
-    },
+    { key: 'result_docnum', label: 'Номер свидетельства', type: 'text', sortable: true, filterable: true },
+    { key: 'arshin_id', label: 'ID в Аршине', type: 'link', sortable: true, filterable: true, render: renderArshinLinkCell },
+    { key: 'mit_title', label: 'Наименование типа СИ', type: 'text', sortable: true, filterable: true },
+    { key: 'mit_notation', label: 'Обозначение', type: 'text', sortable: true, filterable: true },
+    { key: 'org_title', label: 'Организация', type: 'text', sortable: true, filterable: true },
+    { key: 'mi_number', label: 'Заводской номер', type: 'text', sortable: true, filterable: true },
     {
       key: 'verification_date',
       label: 'Дата поверки',
@@ -114,8 +91,8 @@
       type: 'interval',
       sortable: true,
       filterable: false,
-      sortAccessor: record => (Number.isFinite(record.intervalDays) ? record.intervalDays : Number.MIN_SAFE_INTEGER),
       render: renderIntervalCell,
+      sortAccessor: record => (Number.isFinite(record.intervalDays) ? record.intervalDays : Number.MIN_SAFE_INTEGER),
     },
   ];
 
@@ -125,34 +102,150 @@
   let filteredRecords = [];
   const filters = {};
   let currentSort = { key: null, direction: 'none' };
+  let pollingHandle = null;
+  let tableInitialized = false;
+  let datasetLoaded = false;
+  let datasetLoading = false;
+  let datasetLoading = false;
 
-  hydrateSummary(summaryData);
-  fetchDataset(datasetUrl)
-    .then(payload => {
-      if (!payload || !Array.isArray(payload.reports)) {
-        throw new Error('Некорректный формат набора данных');
-      }
-      rawRecords = payload.reports.map(transformRecord);
-      filteredRecords = [...rawRecords];
+  const initialSummary = safeParseJSON(root.dataset.summary) || {};
+  hydrateSummary(initialSummary);
+  updateProgressUI(currentProgress, currentStatus, processedRecords, totalRecords);
 
-      hydrateSummary(payload.summary || summaryData);
-      buildTableSkeleton();
-      updateHeaderIndicators();
-      renderTable();
-    })
-    .catch(error => {
-      console.error(error);
-      showDatasetError('Не удалось загрузить данные предпросмотра.');
-    });
+  if (datasetUrl) {
+    loadDataset();
+  }
+
+  if (statusUrl) {
+    startStatusPolling();
+  }
+
+  if (downloadLink && downloadLink.classList.contains('disabled') === false && downloadHref) {
+    enableDownload();
+  }
+
+  function startStatusPolling() {
+    if (!statusUrl) {
+      return;
+    }
+    pollStatus();
+    pollingHandle = setInterval(pollStatus, 2000);
+  }
+
+  function stopStatusPolling() {
+    if (pollingHandle) {
+      clearInterval(pollingHandle);
+      pollingHandle = null;
+    }
+  }
+
+  function pollStatus() {
+    fetch(statusUrl)
+      .then(response => response.json())
+      .then(payload => {
+        if (payload.error) {
+          return;
+        }
+
+        const progress = Number(payload.progress ?? currentProgress);
+        const status = payload.status || currentStatus;
+        updateProgressUI(progress, status);
+        hydrateSummary(payload.summary || {});
+
+        if (payload.dataset_available) {
+          enableDownload();
+          if (!datasetUrl) {
+            datasetUrl = defaultDatasetUrl || (taskId ? `/api/v1/results/${taskId}/dataset` : '');
+          }
+        }
+
+        if (status === 'COMPLETED') {
+          if (!datasetLoaded) {
+            loadDataset()
+              .then(() => {
+                updateProgressUI(100, 'COMPLETED', processedRecords, totalRecords);
+                stopStatusPolling();
+              })
+              .catch(() => {
+                /* retry on next poll */
+              });
+          } else {
+            stopStatusPolling();
+          }
+        } else if (status === 'FAILED') {
+          stopStatusPolling();
+        }
+
+        if (datasetUrl && !datasetLoaded && !datasetLoading && status !== 'FAILED') {
+          loadDataset().catch(() => {
+            /* swallow, retry next poll */
+          });
+        }
+      })
+      .catch(error => {
+        console.warn('Status polling error', error);
+      });
+  }
+
+  function loadDataset() {
+    if (!datasetUrl || datasetLoaded || datasetLoading) {
+      return Promise.resolve();
+    }
+
+    datasetLoading = true;
+    return fetchDataset(datasetUrl)
+      .then(payload => {
+        if (!payload || !Array.isArray(payload.reports)) {
+          throw new Error('Некорректный формат набора данных');
+        }
+
+        rawRecords = payload.reports.map(transformRecord);
+        filteredRecords = [...rawRecords];
+        hydrateSummary(payload.summary || {});
+
+        if (!tableInitialized) {
+          buildTableSkeleton();
+          tableInitialized = true;
+        }
+        updateHeaderIndicators();
+        renderTable();
+        datasetLoaded = true;
+        datasetLoading = false;
+        processedRecords = rawRecords.length;
+        if (!totalRecords) {
+          totalRecords = rawRecords.length;
+        }
+        if (tablePanel) {
+          tablePanel.hidden = false;
+        }
+        updateProgressUI(100, 'COMPLETED', processedRecords, totalRecords);
+      })
+      .catch(error => {
+        datasetLoading = false;
+        console.error(error);
+        showDatasetError('Не удалось загрузить данные предпросмотра. Повторная попытка...');
+        throw error;
+      });
+  }
+
+  function enableDownload() {
+    if (!downloadLink || !downloadHref) {
+      return;
+    }
+    downloadLink.classList.remove('disabled');
+    downloadLink.removeAttribute('aria-disabled');
+    downloadLink.removeAttribute('role');
+    downloadLink.href = downloadHref;
+    downloadLink.setAttribute('download', '');
+  }
 
   function fetchDataset(url) {
-    return fetch(url, { headers: { 'Accept': 'application/json' } })
-      .then(response => {
-        if (!response.ok) {
-          throw new Error(`Dataset request failed: ${response.status}`);
-        }
-        return response.json();
-      });
+    return fetch(url, { headers: { Accept: 'application/json' } }).then(response => {
+      if (!response.ok) {
+        throw new Error(`Dataset request failed: ${response.status}`);
+      }
+      return response.json();
+    });
   }
 
   function transformRecord(item, index) {
@@ -177,12 +270,24 @@
 
     columns.forEach(column => {
       if (column.filterable) {
-        const value = resolveFilterValue(record, column.key);
-        record.filterMap[column.key] = value;
+        record.filterMap[column.key] = resolveFilterValue(record, column.key);
       }
     });
 
     return record;
+  }
+
+  function resolveStatus(item) {
+    if (item.processing_status === 'NOT_FOUND' || !item.arshin_id) {
+      return 'not_found';
+    }
+    if (item.processing_status === 'MATCHED' && item.certificate_updated) {
+      return 'updated';
+    }
+    if (item.processing_status === 'MATCHED') {
+      return 'unchanged';
+    }
+    return 'not_found';
   }
 
   function resolveFilterValue(record, key) {
@@ -199,20 +304,11 @@
     return String(raw).toLowerCase();
   }
 
-  function resolveStatus(item) {
-    if (item.processing_status === 'NOT_FOUND' || !item.arshin_id) {
-      return 'not_found';
-    }
-    if (item.processing_status === 'MATCHED' && item.certificate_updated) {
-      return 'updated';
-    }
-    if (item.processing_status === 'MATCHED') {
-      return 'unchanged';
-    }
-    return 'not_found';
-  }
-
   function buildTableSkeleton() {
+    if (!headerRow || !filterRow) {
+      return;
+    }
+
     headerRow.innerHTML = '';
     filterRow.innerHTML = '';
 
@@ -224,6 +320,7 @@
       button.dataset.sortKey = column.key;
       button.textContent = column.label;
       button.setAttribute('aria-label', `Сортировать по столбцу ${column.label}`);
+      button.setAttribute('aria-sort', 'none');
       button.addEventListener('click', () => toggleSort(column.key));
       button.addEventListener('keydown', event => {
         if (event.key === 'Enter' || event.key === ' ') {
@@ -274,11 +371,14 @@
     } else {
       currentSort.direction = currentSort.direction === 'asc' ? 'desc' : currentSort.direction === 'desc' ? 'none' : 'asc';
     }
-    applyFiltersAndSort();
     updateHeaderIndicators();
+    applyFiltersAndSort();
   }
 
   function updateHeaderIndicators() {
+    if (!headerRow) {
+      return;
+    }
     const buttons = headerRow.querySelectorAll('.header-control');
     buttons.forEach(button => {
       const key = button.dataset.sortKey;
@@ -300,14 +400,17 @@
   }
 
   function applyFiltersAndSort() {
-    filteredRecords = rawRecords.filter(record => {
-      return Object.entries(filters).every(([key, value]) => {
+    if (!tableInitialized) {
+      return;
+    }
+    filteredRecords = rawRecords.filter(record =>
+      Object.entries(filters).every(([key, value]) => {
         if (!value) {
           return true;
         }
         return (record.filterMap[key] || '').includes(value);
-      });
-    });
+      })
+    );
 
     if (currentSort.key && currentSort.direction !== 'none') {
       const column = columnsMap[currentSort.key];
@@ -325,20 +428,27 @@
   }
 
   function renderTable() {
+    if (!tableBody) {
+      return;
+    }
     tableBody.innerHTML = '';
+
     if (!filteredRecords.length) {
-      emptyState.hidden = false;
+      if (emptyState) {
+        emptyState.hidden = false;
+      }
       updateVisibleCounter(0);
       return;
     }
 
-    emptyState.hidden = true;
+    if (emptyState) {
+      emptyState.hidden = true;
+    }
     const fragment = document.createDocumentFragment();
     filteredRecords.forEach(record => {
       const row = document.createElement('tr');
       columns.forEach(column => {
         const cell = document.createElement('td');
-
         if (column.align === 'right') {
           cell.classList.add('text-end');
         } else {
@@ -351,7 +461,6 @@
           const value = record[column.key];
           cell.textContent = formatCellValue(value, column.type);
         }
-
         row.appendChild(cell);
       });
       fragment.appendChild(row);
@@ -359,6 +468,12 @@
 
     tableBody.appendChild(fragment);
     updateVisibleCounter(filteredRecords.length);
+  }
+
+  function updateVisibleCounter(count) {
+    if (visibleCounter) {
+      visibleCounter.textContent = count.toString();
+    }
   }
 
   function renderStatusCell(cell, record) {
@@ -404,8 +519,8 @@
     }
 
     if (type === 'date') {
-      const aTime = Number.isFinite(a) ? a : a?.getTime?.() ?? Number.MIN_SAFE_INTEGER;
-      const bTime = Number.isFinite(b) ? b : b?.getTime?.() ?? Number.MIN_SAFE_INTEGER;
+      const aTime = a instanceof Date ? a.getTime() : Number.isFinite(a) ? a : Number.MIN_SAFE_INTEGER;
+      const bTime = b instanceof Date ? b.getTime() : Number.isFinite(b) ? b : Number.MIN_SAFE_INTEGER;
       return aTime - bTime;
     }
 
@@ -422,10 +537,48 @@
     if (type === 'number') {
       const num = Number(value);
       if (Number.isFinite(num)) {
-        return num % 1 === 0 ? num.toString() : num.toFixed(3);
+        return Number.isInteger(num) ? num.toString() : num.toFixed(3);
       }
     }
     return value;
+  }
+
+  function updateProgressUI(progress, status, processed = null, total = null) {
+    currentProgress = progress;
+    currentStatus = status;
+    if (typeof processed === 'number') {
+      processedRecords = processed;
+    }
+    if (typeof total === 'number') {
+      totalRecords = total;
+    }
+
+    if (progressDetailed) {
+      const totalLabel = totalRecords > 0 ? totalRecords : '—';
+      progressDetailed.dataset.status = status;
+      progressDetailed.textContent = totalRecords ? `${processedRecords} / ${totalLabel}` : `${processedRecords}`;
+    }
+
+    if (!progressPanel) {
+      return;
+    }
+    const normalizedProgress = Math.max(0, Math.min(100, Math.round(progress)));
+    if (progressBar) {
+      const width = status === 'COMPLETED' ? 100 : Math.max(5, normalizedProgress);
+      progressBar.style.width = `${width}%`;
+    }
+    if (progressLabel) {
+      progressLabel.textContent = `${normalizedProgress}%`;
+    }
+    if (statusLabelNode) {
+      statusLabelNode.textContent = STATUS_LABELS[status] || status;
+      statusLabelNode.dataset.status = status;
+    }
+    if (status === 'COMPLETED' && datasetLoaded) {
+      progressPanel.hidden = true;
+    } else {
+      progressPanel.hidden = false;
+    }
   }
 
   function calculateInterval(startDate, endDate) {
@@ -437,17 +590,14 @@
       return { days: null, display: null };
     }
     const days = Math.round(diffMs / (1000 * 60 * 60 * 24));
-    if (!Number.isFinite(days)) {
-      return { days: null, display: null };
-    }
     const years = Math.floor(days / 365);
     const months = Math.floor((days % 365) / 30);
     const residualDays = Math.max(days - years * 365 - months * 30, 0);
-    const humanParts = [];
-    if (years) humanParts.push(`${years}г`);
-    if (months) humanParts.push(`${months}м`);
-    if (residualDays || humanParts.length === 0) humanParts.push(`${residualDays}д`);
-    return { days, display: `${days} дн / ${humanParts.join(' ')}` };
+    const parts = [];
+    if (years) parts.push(`${years}г`);
+    if (months) parts.push(`${months}м`);
+    if (residualDays || parts.length === 0) parts.push(`${residualDays}д`);
+    return { days, display: `${days} дн / ${parts.join(' ')}` };
   }
 
   function parseIsoDate(value) {
@@ -487,12 +637,6 @@
     currentSort = { key: null, direction: 'none' };
     updateHeaderIndicators();
     applyFiltersAndSort();
-  }
-
-  function updateVisibleCounter(count) {
-    if (visibleCounter) {
-      visibleCounter.textContent = count.toString();
-    }
   }
 
   function hydrateSummary(summary) {

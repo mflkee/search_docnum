@@ -1,9 +1,11 @@
 import asyncio
+import math
 import uuid
 from datetime import datetime, timezone
 from typing import Awaitable, Callable, Optional, cast
 
 from src.config.settings import settings
+from src.models.arshin_record import ArshinRegistryRecord
 from src.models.excel_data import ExcelRegistryData
 from src.models.processing_task import ProcessingTask, ProcessingTaskStatus
 from src.models.report import ProcessingStatus, Report
@@ -14,46 +16,35 @@ from src.utils.validators import validate_certificate_format
 
 
 class DataProcessorService:
-    """
-    Service for processing Excel data and matching with Arshin registry.
-    Handles the core logic of matching Excel records with Arshin data.
-    """
+    """Core service orchestrating Excel parsing and Arшин lookups."""
 
     def __init__(self):
         self.excel_parser = ExcelParserService()
         self.arshin_client = ArshinClientService()
         self._concurrency_limit = max(1, settings.arshin_max_concurrent_requests)
         self._semaphore = asyncio.Semaphore(self._concurrency_limit)
+        self._record_cache: dict[tuple[str, int, Optional[int]], Optional[ArshinRegistryRecord]] = {}
 
-    async def process_excel_file(self, file_path: str, task_id: Optional[str] = None,
-                                verification_date_column: str = "Дата поверки",
-                                certificate_number_column: str = "Наличие документа с отметкой о поверке (№ св-ва о поверке)",
-                                sheet_name: str = "Перечень") -> list[Report]:
-        """
-        Process an Excel file by matching its records with Arshin registry data.
-
-        Args:
-            file_path: Path to the Excel file to process
-            task_id: Optional task ID for tracking
-            verification_date_column: Column header or Excel reference for verification date (default 'Дата поверки')
-            certificate_number_column: Column header or Excel reference for certificate number (default 'Наличие документа с отметкой о поверке (№ св-ва о поверке)')
-            sheet_name: Name of the sheet to parse (default 'Перечень')
-
-        Returns:
-            List of Report objects containing matched data
-        """
+    async def process_excel_file(
+        self,
+        file_path: str,
+        task_id: Optional[str] = None,
+        verification_date_column: str = "Дата поверки",
+        certificate_number_column: str = "Наличие документа с отметкой о поверке (№ св-ва о поверке)",
+        sheet_name: str = "Перечень",
+    ) -> list[Report]:
+        """Process Excel synchronously (without task tracking)."""
         if not task_id:
             task_id = str(uuid.uuid4())
 
         app_logger.info(f"Starting processing of file {file_path} with task ID {task_id}")
 
         try:
-            # Parse the Excel file to get ExcelRegistryData objects
             excel_data_list = self.excel_parser.parse_excel_file(
                 file_path,
                 verification_date_column,
                 certificate_number_column,
-                sheet_name
+                sheet_name,
             )
             app_logger.info(f"Parsed {len(excel_data_list)} records from Excel file")
 
@@ -61,29 +52,26 @@ class DataProcessorService:
                 app_logger.warning(f"No valid records found in Excel file {file_path}")
                 return []
 
-            reports = await self._process_records_concurrently(excel_data_list)
-
-            app_logger.info(f"Completed processing {len(reports)} records for task {task_id}")
+            reports = await self._process_records_concurrently(excel_data_list, progress_callback=None)
             self._log_processing_statistics(reports)
             return reports
-
-        except Exception as e:
-            app_logger.error(f"Error processing Excel file {file_path}: {e}")
+        except Exception as exc:
+            app_logger.error(f"Error processing Excel file {file_path}: {exc}")
             raise
 
+    @staticmethod
+    def _classify_report(report: Report) -> str:
+        if report.processing_status == ProcessingStatus.NOT_FOUND:
+            return "not_found"
+        if report.processing_status in {ProcessingStatus.ERROR, ProcessingStatus.INVALID_CERT_FORMAT}:
+            return "error"
+        if report.processing_status == ProcessingStatus.MATCHED and bool(report.certificate_updated):
+            return "updated"
+        return "unchanged"
+
     async def _process_single_record(self, excel_record: ExcelRegistryData, row_number: int) -> Report:
-        """
-        Process a single Excel record against the Arshin registry.
-
-        Args:
-            excel_record: The Excel record to process
-            row_number: The row number in the original Excel file
-
-        Returns:
-            Report object with the processing result
-        """
+        """Process a single Excel row against Arшин registry."""
         try:
-            # Validate certificate number format
             if not validate_certificate_format(excel_record.certificate_number):
                 return Report(
                     arshin_id=None,
@@ -92,15 +80,24 @@ class DataProcessorService:
                     mit_title=None,
                     mit_notation=None,
                     mi_number=excel_record.serial_number or "",
-                    verification_date=excel_record.verification_date.strftime("%Y-%m-%d") if excel_record.verification_date else "",
-                    valid_date=None,
-                    result_docnum=None,
+                    verification_date=(
+                        excel_record.verification_date.strftime("%Y-%m-%d")
+                        if excel_record.verification_date
+                        else ""
+                    ),
+                    valid_date=(
+                        excel_record.valid_until_date.strftime("%Y-%m-%d")
+                        if excel_record.valid_until_date
+                        else None
+                    ),
+                    result_docnum=excel_record.certificate_number,
                     source_certificate_number=excel_record.certificate_number,
                     certificate_updated=False,
                     processing_status=ProcessingStatus.INVALID_CERT_FORMAT,
-                    excel_source_row=row_number
+                    excel_source_row=row_number,
                 )
 
+            current_year = datetime.now().year
             verification_year = excel_record.verification_date.year if excel_record.verification_date else None
             valid_until_year = excel_record.valid_until_date.year if excel_record.valid_until_date else None
 
@@ -109,7 +106,8 @@ class DataProcessorService:
 
             if verification_year is None:
                 app_logger.warning(
-                    f"Unable to determine verification year for certificate {excel_record.certificate_number}; skipping record"
+                    "Unable to determine verification year for certificate %s; skipping record",
+                    excel_record.certificate_number,
                 )
                 return Report(
                     arshin_id=None,
@@ -118,20 +116,36 @@ class DataProcessorService:
                     mit_title=None,
                     mit_notation=None,
                     mi_number=excel_record.serial_number or "",
-                    verification_date=excel_record.verification_date.strftime("%Y-%m-%d") if excel_record.verification_date else "",
-                    valid_date=None,
-                    result_docnum=None,
+                    verification_date=(
+                        excel_record.verification_date.strftime("%Y-%m-%d")
+                        if excel_record.verification_date
+                        else ""
+                    ),
+                    valid_date=(
+                        excel_record.valid_until_date.strftime("%Y-%m-%d")
+                        if excel_record.valid_until_date
+                        else None
+                    ),
+                    result_docnum=excel_record.certificate_number,
                     source_certificate_number=excel_record.certificate_number,
                     certificate_updated=False,
-                    processing_status=ProcessingStatus.ERROR,
-                    excel_source_row=row_number
+                    processing_status=ProcessingStatus.NOT_FOUND,
+                    excel_source_row=row_number,
                 )
 
-            # Query Arshin registry using the certificate number and year information
-            arshin_record = await self.arshin_client.get_instrument_by_certificate(
-                excel_record.certificate_number,
-                verification_year,
-                valid_until_year=valid_until_year
+            cache_key = (excel_record.certificate_number, verification_year, valid_until_year)
+            if cache_key in self._record_cache:
+                arshin_record = self._record_cache[cache_key]
+            else:
+                arshin_record = await self.arshin_client.get_instrument_by_certificate(
+                    excel_record.certificate_number,
+                    verification_year,
+                    valid_until_year=valid_until_year,
+                )
+                self._record_cache[cache_key] = arshin_record
+
+            skip_due_to_current_year = bool(
+                excel_record.verification_date and excel_record.verification_date.year >= current_year
             )
 
             if arshin_record:
@@ -139,12 +153,15 @@ class DataProcessorService:
                 normalized_result_doc = (arshin_record.result_docnum or "").strip()
                 certificate_updated = bool(normalized_result_doc) and normalized_result_doc != normalized_source_doc
 
-                # Successfully matched
-                if certificate_updated:
-                    app_logger.info(
-                        f"Certificate updated for serial {excel_record.serial_number or ''}: "
-                        f"{normalized_source_doc} -> {normalized_result_doc}"
-                    )
+                arshin_verification_date = arshin_record.verification_date
+                if (
+                    skip_due_to_current_year
+                    and arshin_verification_date
+                    and excel_record.verification_date
+                    and arshin_verification_date < excel_record.verification_date
+                ):
+                    certificate_updated = False
+                    normalized_result_doc = normalized_source_doc
 
                 return Report(
                     arshin_id=arshin_record.vri_id,
@@ -154,34 +171,22 @@ class DataProcessorService:
                     mit_notation=arshin_record.mit_notation,
                     mi_number=arshin_record.mi_number,
                     verification_date=arshin_record.verification_date.strftime("%Y-%m-%d"),
-                    valid_date=arshin_record.valid_date.strftime("%Y-%m-%d") if arshin_record.valid_date else None,
-                    result_docnum=arshin_record.result_docnum,
+                    valid_date=(
+                        arshin_record.valid_date.strftime("%Y-%m-%d")
+                        if arshin_record.valid_date
+                        else (
+                            excel_record.valid_until_date.strftime("%Y-%m-%d")
+                            if excel_record.valid_until_date
+                            else None
+                        )
+                    ),
+                    result_docnum=normalized_result_doc,
                     source_certificate_number=excel_record.certificate_number,
                     certificate_updated=certificate_updated,
                     processing_status=ProcessingStatus.MATCHED,
-                    excel_source_row=row_number
-                )
-            else:
-                # Record not found in Arshin registry
-                return Report(
-                    arshin_id=None,
-                    org_title=None,
-                    mit_number=None,
-                    mit_title=None,
-                    mit_notation=None,
-                    mi_number=excel_record.serial_number or "",
-                    verification_date=excel_record.verification_date.strftime("%Y-%m-%d") if excel_record.verification_date else "",
-                    valid_date=None,
-                    result_docnum=None,
-                    source_certificate_number=excel_record.certificate_number,
-                    certificate_updated=False,
-                    processing_status=ProcessingStatus.NOT_FOUND,
-                    excel_source_row=row_number
+                    excel_source_row=row_number,
                 )
 
-        except Exception as e:
-            app_logger.error(f"Error processing record with certificate {excel_record.certificate_number}: {e}")
-            # Return error status report
             return Report(
                 arshin_id=None,
                 org_title=None,
@@ -189,33 +194,63 @@ class DataProcessorService:
                 mit_title=None,
                 mit_notation=None,
                 mi_number=excel_record.serial_number or "",
-                verification_date=excel_record.verification_date.strftime("%Y-%m-%d") if excel_record.verification_date else "",
-                valid_date=None,
+                verification_date=(
+                    excel_record.verification_date.strftime("%Y-%m-%d")
+                    if excel_record.verification_date
+                    else ""
+                ),
+                valid_date=(
+                    excel_record.valid_until_date.strftime("%Y-%m-%d")
+                    if excel_record.valid_until_date
+                    else None
+                ),
+                result_docnum=None,
+                source_certificate_number=excel_record.certificate_number,
+                certificate_updated=False,
+                processing_status=ProcessingStatus.NOT_FOUND,
+                excel_source_row=row_number,
+            )
+
+        except Exception as exc:
+            app_logger.error(
+                "Error processing record with certificate %s: %s",
+                excel_record.certificate_number,
+                exc,
+            )
+            return Report(
+                arshin_id=None,
+                org_title=None,
+                mit_number=None,
+                mit_title=None,
+                mit_notation=None,
+                mi_number=excel_record.serial_number or "",
+                verification_date=(
+                    excel_record.verification_date.strftime("%Y-%m-%d")
+                    if excel_record.verification_date
+                    else ""
+                ),
+                valid_date=(
+                    excel_record.valid_until_date.strftime("%Y-%m-%d")
+                    if excel_record.valid_until_date
+                    else None
+                ),
                 result_docnum=None,
                 source_certificate_number=excel_record.certificate_number,
                 certificate_updated=False,
                 processing_status=ProcessingStatus.ERROR,
-                excel_source_row=row_number
+                excel_source_row=row_number,
             )
 
     async def process_records_batch(self, excel_records: list[ExcelRegistryData]) -> list[Report]:
-        """
-        Process a batch of Excel records against the Arshin registry.
-
-        Args:
-            excel_records: List of ExcelRegistryData objects to process
-
-        Returns:
-            List of Report objects with the processing results
-        """
-        reports = await self._process_records_concurrently(excel_records)
+        reports = await self._process_records_concurrently(excel_records, progress_callback=None)
         self._log_processing_statistics(reports)
         return reports
 
-    async def _process_record_with_semaphore(self, index: int, excel_record: ExcelRegistryData) -> tuple[int, Report]:
-        """
-        Wrapper to process a single record with concurrency control.
-        """
+    async def _process_record_with_semaphore(
+        self,
+        index: int,
+        excel_record: ExcelRegistryData,
+    ) -> tuple[int, Report]:
         async with self._semaphore:
             source_row_number = excel_record.source_row_number or (index + 2)
             report = await self._process_single_record(excel_record, source_row_number)
@@ -224,23 +259,15 @@ class DataProcessorService:
     async def _process_records_concurrently(
         self,
         excel_records: list[ExcelRegistryData],
-        progress_callback: Optional[Callable[[int, int], Awaitable[None]]] = None
+        progress_callback: Optional[Callable[[int, int, Report], Awaitable[None]]],
     ) -> list[Report]:
-        """
-        Process Excel records concurrently while respecting rate limits.
-
-        Args:
-            excel_records: List of records to process
-            progress_callback: Optional coroutine called with (completed, total)
-
-        Returns:
-            List of Report objects ordered as input records
-        """
         if not excel_records:
             return []
 
         app_logger.debug(
-            f"Processing {len(excel_records)} records with concurrency limit {self._concurrency_limit}"
+            "Processing %d records with concurrency limit %d",
+            len(excel_records),
+            self._concurrency_limit,
         )
 
         reports: list[Optional[Report]] = [None] * len(excel_records)
@@ -256,23 +283,12 @@ class DataProcessorService:
             completed += 1
 
             if progress_callback:
-                await progress_callback(completed, len(excel_records))
+                await progress_callback(completed, len(excel_records), report)
 
-        # All slots must be filled
         return [cast(Report, report) for report in reports if report is not None]
 
     def _compute_processing_statistics(self, reports: list[Report]) -> dict[str, int]:
-        """
-        Compute processing statistics for the provided reports.
-
-        Args:
-            reports: List of processed Report instances
-
-        Returns:
-            Dictionary with aggregated statistics
-        """
         total = len(reports)
-        matched = sum(1 for r in reports if r.processing_status == ProcessingStatus.MATCHED)
         updated = sum(
             1
             for r in reports
@@ -281,7 +297,7 @@ class DataProcessorService:
         unchanged = sum(
             1
             for r in reports
-            if r.processing_status == ProcessingStatus.MATCHED and r.certificate_updated is False
+            if r.processing_status == ProcessingStatus.MATCHED and not r.certificate_updated
         )
         not_found = sum(1 for r in reports if r.processing_status == ProcessingStatus.NOT_FOUND)
         errors = sum(1 for r in reports if r.processing_status == ProcessingStatus.ERROR)
@@ -291,7 +307,6 @@ class DataProcessorService:
 
         return {
             "processed": total,
-            "matched": matched,
             "updated": updated,
             "unchanged": unchanged,
             "not_found": not_found,
@@ -300,47 +315,21 @@ class DataProcessorService:
         }
 
     def _log_processing_statistics(self, reports: list[Report]) -> None:
-        """
-        Log aggregated processing statistics.
-
-        Args:
-            reports: List of processed Report instances
-        """
         if not reports:
             app_logger.info("Processing summary: no records processed")
             return
 
         stats = self._compute_processing_statistics(reports)
-        summary_message = (
-            "Processing summary | обработано: {processed}, найдено: {matched} "
-            "(обновлено: {updated}, без изменений: {unchanged}), не найдено: {not_found}, "
-            "ошибки: {errors}, некорректный формат: {invalid_format}"
-        ).format(**stats)
-        app_logger.info(summary_message)
+        app_logger.info(
+            "Processing summary | обработано: %(processed)s, обновлено: %(updated)s, без изменений: %(unchanged)s, "
+            "не найдено: %(not_found)s, ошибки: %(errors)s, некорректный формат: %(invalid_format)s",
+            stats,
+        )
 
     def compute_processing_statistics(self, reports: list[Report]) -> dict[str, int]:
-        """
-        Public helper to expose processing statistics.
-
-        Args:
-            reports: Processed report objects
-
-        Returns:
-            Aggregated statistics dictionary
-        """
         return self._compute_processing_statistics(reports)
 
     def create_processing_task(self, file_path: str, task_id: Optional[str] = None) -> ProcessingTask:
-        """
-        Create a processing task object for tracking file processing.
-
-        Args:
-            file_path: Path to the file being processed
-            task_id: Optional task ID (will be generated if not provided)
-
-        Returns:
-            ProcessingTask object
-        """
         if not task_id:
             task_id = str(uuid.uuid4())
 
@@ -349,94 +338,109 @@ class DataProcessorService:
             status=ProcessingTaskStatus.PENDING,
             progress=0,
             created_at=datetime.now(timezone.utc),
-            file_path=file_path
+            file_path=file_path,
         )
 
-    async def update_task_progress(self, task: ProcessingTask, progress: int, status: ProcessingTaskStatus = None):
-        """
-        Update the progress and status of a processing task.
-
-        Args:
-            task: The ProcessingTask object to update
-            progress: Progress percentage (0-100)
-            status: Optional new status
-        """
-        task.progress = max(0, min(100, progress))  # Ensure progress is between 0-100
+    async def update_task_progress(
+        self,
+        task: ProcessingTask,
+        progress: int,
+        status: Optional[ProcessingTaskStatus] = None,
+    ) -> None:
+        task.progress = max(0, min(100, progress))
         if status:
             task.status = status
+        app_logger.debug("Task %s progress: %d%% (%s)", task.task_id, task.progress, task.status.value)
 
-        # Log progress updates
-        app_logger.info(f"Task {task.task_id} progress: {task.progress}%, status: {task.status}")
-
-    async def process_with_progress_tracking(self, file_path: str, task_id: Optional[str] = None,
-                                            verification_date_column: str = "Дата поверки",
-                                            certificate_number_column: str = "Наличие документа с отметкой о поверке (№ св-ва о поверке)",
-                                            sheet_name: str = "Перечень") -> list[Report]:
-        """
-        Process an Excel file with progress tracking for background tasks.
-
-        Args:
-            file_path: Path to the Excel file to process
-            task_id: Optional task ID for tracking
-            verification_date_column: Column header or Excel reference for verification date (default 'Дата поверки')
-            certificate_number_column: Column header or Excel reference for certificate number (default 'Наличие документа с отметкой о поверке (№ св-ва о поверке)')
-            sheet_name: Name of the sheet to parse (default 'Перечень')
-
-        Returns:
-            List of Report objects containing matched data
-        """
+    async def process_with_progress_tracking(
+        self,
+        file_path: str,
+        task_id: Optional[str] = None,
+        verification_date_column: str = "Дата поверки",
+        certificate_number_column: str = "Наличие документа с отметкой о поверке (№ св-ва о поверке)",
+        sheet_name: str = "Перечень",
+    ) -> list[Report]:
         if not task_id:
             task_id = str(uuid.uuid4())
 
-        # Create and initialize the processing task
         task = self.create_processing_task(file_path, task_id)
         task.status = ProcessingTaskStatus.PROCESSING
 
         try:
             app_logger.info(f"Starting processing of file {file_path} with progress tracking")
 
-            # Parse the Excel file to get the total count for progress calculation
             excel_data_list = self.excel_parser.parse_excel_file(
                 file_path,
                 verification_date_column,
                 certificate_number_column,
-                sheet_name
+                sheet_name,
             )
+
             total_records = len(excel_data_list)
+            task.total_records = total_records
 
             if total_records == 0:
                 app_logger.warning(f"No valid records found in Excel file {file_path}")
                 task.status = ProcessingTaskStatus.COMPLETED
                 task.progress = 100
+                task.summary = {"processed": 0, "updated": 0, "unchanged": 0, "not_found": 0}
                 return []
 
-            async def progress_callback(completed: int, total: int):
-                progress = int((completed / total) * 100) if total > 0 else 0
+            summary_running = {
+                "processed": 0,
+                "updated": 0,
+                "unchanged": 0,
+                "not_found": 0,
+            }
+
+            async def progress_callback(completed: int, total: int, report: Report) -> None:
+                summary_running["processed"] = completed
+                status_kind = self._classify_report(report)
+                if status_kind == "updated":
+                    summary_running["updated"] += 1
+                elif status_kind == "unchanged":
+                    summary_running["unchanged"] += 1
+                elif status_kind == "not_found":
+                    summary_running["not_found"] += 1
+
+                task.processed_records = completed
+                task.summary = summary_running.copy()
+
+                progress = 0
+                if total > 0:
+                    progress = math.ceil((completed / total) * 100) if completed < total else 100
+
                 await self.update_task_progress(task, progress)
 
             reports = await self._process_records_concurrently(
                 excel_data_list,
-                progress_callback=progress_callback
+                progress_callback=progress_callback,
             )
 
-            await self.update_task_progress(task, 100, ProcessingTaskStatus.COMPLETED)
-            app_logger.info(f"Completed processing of {total_records} records for task {task_id}")
+            final_stats = self._compute_processing_statistics(reports)
+            task.summary = {
+                "processed": final_stats.get("processed", 0),
+                "updated": final_stats.get("updated", 0),
+                "unchanged": final_stats.get("unchanged", 0),
+                "not_found": final_stats.get("not_found", 0),
+            }
+            task.processed_records = total_records
 
+            await self.update_task_progress(task, 100, ProcessingTaskStatus.COMPLETED)
             self._log_processing_statistics(reports)
             return reports
 
-        except Exception as e:
-            app_logger.error(f"Error in processing with progress tracking for task {task_id}: {e}")
+        except Exception as exc:
+            app_logger.error("Error in processing with progress tracking for task %s: %s", task_id, exc)
             task.status = ProcessingTaskStatus.FAILED
-            task.error_message = str(e)
-            await self.update_task_progress(task, 100)  # Mark as complete with failed status
+            task.error_message = str(exc)
+            task.summary = task.summary or {"processed": 0, "updated": 0, "unchanged": 0, "not_found": 0}
+            await self.update_task_progress(task, 100)
             raise
         finally:
             if task.status == ProcessingTaskStatus.PROCESSING:
-                # If we get here without completing properly, mark as failed
                 task.status = ProcessingTaskStatus.FAILED
                 task.error_message = "Processing stopped unexpectedly"
 
-    async def close(self):
-        """Close resources used by the service"""
+    async def close(self) -> None:
         await self.arshin_client.close()

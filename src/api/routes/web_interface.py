@@ -1,5 +1,7 @@
+import os
+
 from fastapi import APIRouter, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 # Internal imports
@@ -20,93 +22,67 @@ async def get_upload_page(request: Request):
 
 @router.get("/status/{task_id}", response_class=HTMLResponse)
 async def get_status_page(request: Request, task_id: str):
-    """
-    Page showing processing status with progress updates.
-    """
-    # Check if task exists
+    """Legacy status endpoint redirecting to the unified results page."""
     if task_id not in active_tasks:
-        # Instead of raising an HTTP error, render an error page
         return templates.TemplateResponse(
-            "status.html",
+            "results.html",
             {
                 "request": request,
                 "task_id": task_id,
                 "error": "Task ID not found",
-                "task": None
+                "dataset_available": False,
+                "summary": {},
+                "download_url": "",
+                "dataset_url": "",
+                "default_dataset_url": f"/api/v1/results/{task_id}/dataset",
+                "default_download_url": f"/api/v1/results/{task_id}",
+                "status_url": f"/api/task-status/{task_id}",
+                "status_value": "NOT_FOUND",
+                "progress": 0,
+                "completed": False,
+                "created_at": None,
+                "completed_at": None,
+                "processed_records": 0,
+                "total_records": 0
             }
         )
 
-    task = active_tasks[task_id]
-    log_user_action("status_page_viewed", details={"task_id": task_id})
-
-    return templates.TemplateResponse(
-        "status.html",
-        {
-            "request": request,
-            "task_id": task_id,
-            "task": task,
-            "error": None
-        }
-    )
+    log_user_action("status_page_redirect", details={"task_id": task_id})
+    return RedirectResponse(f"/results/{task_id}", status_code=303)
 
 @router.get("/results/{task_id}", response_class=HTMLResponse)
 async def get_results_page(request: Request, task_id: str):
     """
     Page with download link for processed results.
     """
-    # Check if task exists
-    if task_id not in active_tasks:
+    task = active_tasks.get(task_id)
+
+    if not task:
         return templates.TemplateResponse(
             "results.html",
             {
                 "request": request,
                 "task_id": task_id,
                 "error": "Task ID not found",
-                "can_download": False,
                 "dataset_available": False,
                 "summary": {},
                 "download_url": "",
-                "dataset_url": ""
+                "dataset_url": "",
+                "default_dataset_url": f"/api/v1/results/{task_id}/dataset",
+                "default_download_url": f"/api/v1/results/{task_id}",
+                "status_url": f"/api/task-status/{task_id}",
+                "status_value": "NOT_FOUND",
+                "progress": 0,
+                "completed": False,
+                "created_at": None,
+                "completed_at": None,
+                "processed_records": 0,
+                "total_records": 0
             }
         )
 
-    task = active_tasks[task_id]
-
-    # Check if task is completed and has results
-    if task.status != ProcessingTaskStatus.COMPLETED:
-        if task.status == ProcessingTaskStatus.FAILED:
-            error_msg = f"Task failed: {task.error_message or 'Unknown error'}"
-        else:
-            error_msg = f"Task not completed (current status: {task.status.value})"
-
-        return templates.TemplateResponse(
-            "results.html",
-            {
-                "request": request,
-                "task_id": task_id,
-                "error": error_msg,
-                "can_download": False,
-                "dataset_available": False,
-                "summary": {},
-                "download_url": "",
-                "dataset_url": ""
-            }
-        )
-
-    if not task.result_path:
-        return templates.TemplateResponse(
-            "results.html",
-            {
-                "request": request,
-                "task_id": task_id,
-                "error": "Result file not available",
-                "can_download": False,
-                "dataset_available": False,
-                "summary": {},
-                "download_url": "",
-                "dataset_url": ""
-            }
-        )
+    dataset_available = bool(task.preview_path and os.path.exists(task.preview_path))
+    download_available = bool(task.result_path and os.path.exists(task.result_path))
 
     log_user_action("results_page_viewed", details={"task_id": task_id})
 
@@ -115,13 +91,21 @@ async def get_results_page(request: Request, task_id: str):
         {
             "request": request,
             "task_id": task_id,
-            "error": None,
-            "can_download": True,
-            "result_path": task.result_path,
-            "dataset_available": task.preview_path is not None,
+            "error": task.error_message if task.status == ProcessingTaskStatus.FAILED else None,
+            "dataset_available": dataset_available,
             "summary": task.summary or {},
-            "download_url": f"/api/v1/results/{task_id}",
-            "dataset_url": f"/api/v1/results/{task_id}/dataset"
+            "download_url": f"/api/v1/results/{task_id}" if download_available else "",
+            "dataset_url": f"/api/v1/results/{task_id}/dataset" if dataset_available else "",
+            "default_dataset_url": f"/api/v1/results/{task_id}/dataset",
+            "default_download_url": f"/api/v1/results/{task_id}",
+            "status_url": f"/api/task-status/{task_id}",
+            "status_value": task.status.value,
+            "progress": task.progress,
+            "completed": task.status == ProcessingTaskStatus.COMPLETED,
+            "created_at": task.created_at.isoformat() if task.created_at else None,
+            "completed_at": task.completed_at.isoformat() if task.completed_at else None,
+            "processed_records": task.processed_records,
+            "total_records": task.total_records or 0
         }
     )
 

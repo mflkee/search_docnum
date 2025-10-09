@@ -87,12 +87,9 @@ document.addEventListener('DOMContentLoaded', function() {
                     if (response.task_id) {
                         // Upload successful
                         uploadProgress.style.display = 'none';
-                        resultDiv.style.display = 'block';
-                        taskIdSpan.textContent = response.task_id;
-                        statusLink.href = `/status/${response.task_id}`;
-                        
-                        // Save to recent tasks
                         saveRecentTask(response.task_id);
+                        window.location.href = `/results/${response.task_id}`;
+                        return;
                     } else {
                         showError(response.detail || 'Upload failed');
                     }

@@ -1,7 +1,18 @@
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
 [project]
-name = "searcharshin"
+name = "search_docnum"
 version = "0.1.0"
-description = "Add your description here"
+description = "Search document number demo application"
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.12"
 dependencies = []
+
+[project.scripts]
+search-docnum = "search_docnum.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["search_docnum*"]

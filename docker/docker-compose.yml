@@ -11,7 +11,7 @@ services:
       APP_PORT: "${APP_PORT:-8000}"
       APP_RELOAD: "${APP_RELOAD:-0}"
     volumes:
-      - ./:/app
+      - ..:/app
     init: true
     ports:
       - "${APP_PORT:-8000}:8000"

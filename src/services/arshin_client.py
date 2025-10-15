@@ -372,51 +372,126 @@ class ArshinClientService:
             f"Stage 2 candidate years for certificate {certificate_number}: {candidate_years}"
         )
 
-        stage2_results: list[dict[str, Any]] = []
+        has_modification = bool(mi_modification and str(mi_modification).strip())
+        has_notation = bool(mit_notation and str(mit_notation).strip())
+        stage1_docnum = (selected_record.get('result_docnum') or '').strip()
+        stage2_successful = False
+        found_updated_doc = False
+        stage2_records: list[tuple[dict[str, Any], bool, bool]] = []
+        seen_record_ids: set[str] = set()
 
-        for candidate_year in candidate_years:
+        unique_candidate_years = sorted({year for year in candidate_years}, reverse=True)
+
+        filter_states: list[tuple[bool, bool]] = [(True, True)]
+        if has_modification:
+            filter_states.append((False, True))
+        if has_notation:
+            filter_states.append((True, False))
+        if has_modification or has_notation:
+            filter_states.append((False, False))
+
+        seen_states: set[tuple[bool, bool]] = set()
+        ordered_filter_states: list[tuple[bool, bool]] = []
+        for state in filter_states:
+            if state not in seen_states:
+                ordered_filter_states.append(state)
+                seen_states.add(state)
+
+        attempt_queue: list[tuple[Optional[int], bool, bool]] = []
+        seen_attempts: set[tuple[Optional[int], bool, bool]] = set()
+        for include_modification, include_notation in ordered_filter_states:
+            for candidate_year in unique_candidate_years:
+                attempt = (candidate_year, include_modification, include_notation)
+                if attempt not in seen_attempts:
+                    attempt_queue.append(attempt)
+                    seen_attempts.add(attempt)
+            any_year_attempt = (None, include_modification, include_notation)
+            if any_year_attempt not in seen_attempts:
+                attempt_queue.append(any_year_attempt)
+                seen_attempts.add(any_year_attempt)
+
+        for candidate_year, include_modification, include_notation in attempt_queue:
             candidate_results = await self.search_by_instrument_params(
                 mit_number=mit_number,
                 mit_title=mit_title,
-                mit_notation=mit_notation,
-                mi_modification=mi_modification,
+                mit_notation=mit_notation if include_notation else None,
+                mi_modification=mi_modification if include_modification else None,
                 mi_number=mi_number,
                 year=candidate_year
             ) or []
 
             if candidate_results:
-                stage2_results = candidate_results
+                stage2_successful = True
+                modifier_label = "with modification" if include_modification else "without modification"
+                notation_label = "with notation" if include_notation else "without notation"
+                year_label = candidate_year if candidate_year is not None else "any year"
                 app_logger.debug(
                     f"Stage 2 search returned {len(candidate_results)} records for certificate {certificate_number} "
-                    f"using year {candidate_year}"
+                    f"using {modifier_label}, {notation_label} ({year_label})"
                 )
+                for record in candidate_results:
+                    record_id = str(record.get('vri_id') or record.get('id') or '')
+                    if record_id in seen_record_ids:
+                        continue
+                    stage2_records.append((record, include_modification, include_notation))
+                    seen_record_ids.add(record_id)
+                    normalized_docnum = (record.get('result_docnum') or '').strip()
+                    if normalized_docnum and normalized_docnum != stage1_docnum:
+                        found_updated_doc = True
+
+            if found_updated_doc:
                 break
 
-        if not stage2_results:
+        if not stage2_successful or not stage2_records:
             app_logger.info(
-                f"No stage 2 results with year filter for certificate {certificate_number}, trying without year"
+                f"No results found in stage 2 for certificate {certificate_number} after relaxing filters"
             )
-            stage2_results = await self.search_by_instrument_params(
-                mit_number=mit_number,
-                mit_title=mit_title,
-                mit_notation=mit_notation,
-                mi_modification=mi_modification,
-                mi_number=mi_number,
-                year=None
-            ) or []
+            return self._convert_to_arshin_record(
+                selected_record,
+                is_stage1_result=True,
+                stage2_successful=False,
+                modification_relaxed=False,
+                notation_relaxed=False
+            )
 
-        if not stage2_results:
-            app_logger.info(f"No results found in stage 2 for certificate {certificate_number}")
-            # If no specific record found, return the one from stage 1 as the best match
-            return self._convert_to_arshin_record(selected_record, is_stage1_result=True)
+        candidate_dicts = [record for record, _, _ in stage2_records]
+        final_record = self._select_most_recent_record(candidate_dicts)
+        if not final_record:
+            app_logger.warning(
+                f"Stage 2 produced records but no valid final record selected for certificate {certificate_number}"
+            )
+            return self._convert_to_arshin_record(
+                selected_record,
+                is_stage1_result=True,
+                stage2_successful=False,
+                modification_relaxed=False,
+                notation_relaxed=False
+            )
 
-        # From stage 2 results, select the most recent one again
-        final_record = self._select_most_recent_record(stage2_results)
-        if final_record:
-            return self._convert_to_arshin_record(final_record, is_stage1_result=False)
-        else:
-            # If we couldn't select a final record, return the stage 1 result
-            return self._convert_to_arshin_record(selected_record, is_stage1_result=True)
+        selected_entry = next(
+            (
+                (record, include_modification, include_notation)
+                for record, include_modification, include_notation in stage2_records
+                if record is final_record
+            ),
+            None,
+        )
+
+        include_mod_flag = True
+        include_notation_flag = True
+        if selected_entry:
+            _, include_mod_flag, include_notation_flag = selected_entry
+
+        modification_relaxed = bool(has_modification and not include_mod_flag)
+        notation_relaxed = bool(has_notation and not include_notation_flag)
+
+        return self._convert_to_arshin_record(
+            final_record,
+            is_stage1_result=False,
+            stage2_successful=True,
+            modification_relaxed=modification_relaxed,
+            notation_relaxed=notation_relaxed
+        )
 
     async def batch_search_instruments(self, certificate_numbers: list[str], year: int) -> dict[str, Optional[ArshinRegistryRecord]]:
         """
@@ -513,13 +588,24 @@ class ArshinClientService:
             app_logger.warning("No records with valid dates found, returning first record")
             return records[0]
 
-    def _convert_to_arshin_record(self, api_record: dict[str, Any], is_stage1_result: bool = True) -> Optional[ArshinRegistryRecord]:
+    def _convert_to_arshin_record(
+        self,
+        api_record: dict[str, Any],
+        *,
+        is_stage1_result: bool = True,
+        stage2_successful: bool = True,
+        modification_relaxed: bool = False,
+        notation_relaxed: bool = False
+    ) -> Optional[ArshinRegistryRecord]:
         """
         Convert an API response record to an ArshinRegistryRecord model.
 
         Args:
             api_record: Dictionary from API response
             is_stage1_result: Whether this record is from stage 1 (less detailed) or stage 2 (detailed)
+            stage2_successful: Indicates whether stage 2 search succeeded
+            modification_relaxed: Indicates whether modification filter was relaxed to obtain the record
+            notation_relaxed: Indicates whether notation filter was relaxed to obtain the record
 
         Returns:
             ArshinRegistryRecord or None if conversion fails
@@ -585,7 +671,10 @@ class ArshinClientService:
                 verification_date=verification_date,
                 valid_date=valid_date,
                 result_docnum=result_docnum,
-                record_date=record_date
+                record_date=record_date,
+                stage2_successful=stage2_successful,
+                modification_relaxed=modification_relaxed,
+                notation_relaxed=notation_relaxed
             )
 
         except Exception as e:

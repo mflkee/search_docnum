@@ -48,6 +48,7 @@
 
   const STATUS_CONFIG = {
     updated: { label: 'Обновлено', className: 'status-chip status-chip--updated', rank: 0 },
+    updated_uncertain: { label: 'Обновлено?', className: 'status-chip status-chip--updated', rank: 0 },
     unchanged: { label: 'Без изменений', className: 'status-chip status-chip--unchanged', rank: 1 },
     not_found: { label: 'Не найдено', className: 'status-chip status-chip--missing', rank: 2 },
   };
@@ -84,6 +85,14 @@
       sortable: true,
       filterable: true,
       sortAccessor: record => record.validDateObj?.getTime() ?? Number.MIN_SAFE_INTEGER,
+    },
+    {
+      key: 'period_range',
+      label: 'Период поверки',
+      type: 'date',
+      sortable: true,
+      filterable: true,
+      sortAccessor: record => record.periodStartTime ?? Number.MIN_SAFE_INTEGER,
     },
     {
       key: 'intervalDisplay',
@@ -251,8 +260,10 @@
     const verificationDateObj = parseIsoDate(item.verification_date);
     const validDateObj = parseIsoDate(item.valid_date);
     const intervalInfo = calculateInterval(verificationDateObj, validDateObj);
+    const periodRange = typeof item.period_range === 'string' ? item.period_range : '';
     const statusKind = resolveStatus(item);
     const statusMeta = STATUS_CONFIG[statusKind] || STATUS_CONFIG.not_found;
+    const periodStartTime = verificationDateObj ? verificationDateObj.getTime() : null;
 
     const record = {
       ...item,
@@ -264,6 +275,8 @@
       statusKind,
       statusLabel: statusMeta.label,
       arshinLink: item.arshin_id ? `${ARSHIN_BASE_URL}${item.arshin_id}` : null,
+      period_range: periodRange,
+      periodStartTime,
       filterMap: {},
     };
 
@@ -281,7 +294,7 @@
       return 'not_found';
     }
     if (item.processing_status === 'MATCHED' && item.certificate_updated) {
-      return 'updated';
+      return item.uncertain_update ? 'updated_uncertain' : 'updated';
     }
     if (item.processing_status === 'MATCHED') {
       return 'unchanged';
@@ -603,19 +616,32 @@
     if (typeof value !== 'string') {
       return null;
     }
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return null;
+    }
     const isoPattern = /^\d{4}-\d{2}-\d{2}$/;
-    if (!isoPattern.test(value)) {
-      return null;
+    const ruPattern = /^\d{2}\.\d{2}\.\d{4}$/;
+
+    if (isoPattern.test(trimmed)) {
+      const [year, month, day] = trimmed.split('-').map(Number);
+      if (!Number.isInteger(year) || !Number.isInteger(month) || !Number.isInteger(day)) {
+        return null;
+      }
+      const parsedIso = new Date(Date.UTC(year, month - 1, day));
+      return Number.isNaN(parsedIso.getTime()) ? null : parsedIso;
     }
-    const [year, month, day] = value.split('-').map(Number);
-    if (!Number.isInteger(year) || !Number.isInteger(month) || !Number.isInteger(day)) {
-      return null;
+
+    if (ruPattern.test(trimmed)) {
+      const [day, month, year] = trimmed.split('.').map(Number);
+      if (!Number.isInteger(year) || !Number.isInteger(month) || !Number.isInteger(day)) {
+        return null;
+      }
+      const parsedRu = new Date(Date.UTC(year, month - 1, day));
+      return Number.isNaN(parsedRu.getTime()) ? null : parsedRu;
     }
-    const parsed = new Date(Date.UTC(year, month - 1, day));
-    if (Number.isNaN(parsed.getTime())) {
-      return null;
-    }
-    return parsed;
+
+    return null;
   }
 
   function debounce(callback, delay) {

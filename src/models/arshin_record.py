@@ -17,6 +17,9 @@ class ArshinRegistryRecord(BaseModel):
     valid_date: datetime  # Valid until date
     result_docnum: str  # Certificate number
     record_date: datetime  # Date associated with this record for comparison (added for sorting multiple records)
+    stage2_successful: bool = True  # Flag indicating whether stage 2 search produced this record
+    modification_relaxed: bool = False  # Indicates if mi_modification filter was relaxed to obtain this record
+    notation_relaxed: bool = False  # Indicates if mit_notation filter was relaxed to obtain this record
 
     def __init__(self, **data):
         # If record_date is not provided, use verification_date

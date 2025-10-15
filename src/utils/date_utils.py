@@ -1,6 +1,6 @@
 import re
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Union
 
 
 def parse_verification_date(date_str: str) -> Optional[datetime]:
@@ -112,6 +112,46 @@ def format_date_for_arshin_api(date_obj: datetime) -> str:
     if not date_obj:
         return ""
     return date_obj.strftime("%Y-%m-%d")
+
+
+def format_date_ddmmyyyy(date_obj: Union[datetime, str, None]) -> str:
+    """
+    Format a datetime or string representation into dd.mm.yyyy format.
+
+    Args:
+        date_obj: Datetime object or string that can be parsed
+
+    Returns:
+        Formatted date string (dd.mm.yyyy) or empty string if parsing fails
+    """
+    if not date_obj:
+        return ""
+
+    if isinstance(date_obj, datetime):
+        return date_obj.strftime("%d.%m.%Y")
+
+    if isinstance(date_obj, str):
+        parsed = parse_verification_date(date_obj)
+        if parsed:
+            return parsed.strftime("%d.%m.%Y")
+
+    return ""
+
+
+def compose_period_range(start_date: str, end_date: str) -> str:
+    """
+    Compose a period range string in the form 'dd.mm.yyyy-dd.mm.yyyy'.
+
+    Args:
+        start_date: Formatted start date string
+        end_date: Formatted end date string
+
+    Returns:
+        Combined range string or empty string if both dates missing
+    """
+    if not start_date and not end_date:
+        return ""
+    return f"{start_date or ''}-{end_date or ''}"
 
 
 def is_valid_date_range(start_date: datetime, end_date: datetime, max_range_years: int = 10) -> bool:

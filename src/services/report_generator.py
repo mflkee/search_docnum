@@ -25,6 +25,7 @@ class ReportGeneratorService:
             'Заводской номер',
             'Дата поверки',
             'Действительна до',
+            'Период поверки',
             'Номер свидетельства',
             'Статус записи',
             'Номер строки в исходном файле'
@@ -39,12 +40,15 @@ class ReportGeneratorService:
         if report.processing_status == ProcessingStatus.INVALID_CERT_FORMAT:
             return "invalid"
         if report.processing_status == ProcessingStatus.MATCHED and bool(report.certificate_updated):
+            if getattr(report, "uncertain_update", False):
+                return "updated_uncertain"
             return "updated"
         return "unchanged"
 
     def _status_label(self, report: Report) -> str:
         mapping = {
             "updated": "Обновлено",
+            "updated_uncertain": "Обновлено?",
             "unchanged": "Без изменений",
             "not_found": "Не найдено",
             "error": "Ошибка",
@@ -85,6 +89,7 @@ class ReportGeneratorService:
                     'Заводской номер': report.mi_number or '',
                     'Дата поверки': report.verification_date or '',
                     'Действительна до': report.valid_date or '',
+                    'Период поверки': report.period_range or '',
                     'Номер свидетельства': report.result_docnum or '',
                     'Статус записи': self._status_label(report),
                     'Номер строки в исходном файле': report.excel_source_row
@@ -151,7 +156,7 @@ class ReportGeneratorService:
         try:
             # Calculate summary statistics
             total_records = len(reports)
-            updated_count = sum(1 for r in reports if self._status_kind(r) == 'updated')
+            updated_count = sum(1 for r in reports if self._status_kind(r) in {'updated', 'updated_uncertain'})
             unchanged_count = sum(1 for r in reports if self._status_kind(r) == 'unchanged')
             not_found_count = sum(1 for r in reports if self._status_kind(r) == 'not_found')
             error_count = sum(1 for r in reports if self._status_kind(r) == 'error')

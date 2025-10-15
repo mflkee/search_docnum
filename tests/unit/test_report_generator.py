@@ -32,8 +32,9 @@ def test_validate_report_data_valid_reports(report_generator):
             mit_title="Test Device",
             mit_notation="TD-01",
             mi_number="123456789",
-            verification_date="2024-01-15",
-            valid_date="2025-01-15",
+            verification_date="15.01.2024",
+            valid_date="15.01.2025",
+            period_range="15.01.2024-15.01.2025",
             result_docnum="C-TEST/01-15-2024/123456789",
             processing_status=ProcessingStatus.MATCHED,
             excel_source_row=1
@@ -54,8 +55,9 @@ def test_generate_report_includes_certificate_number(report_generator, tmp_path)
             mit_title="Test Device",
             mit_notation="TD-01",
             mi_number="123456789",
-            verification_date="2024-01-15",
-            valid_date="2025-01-15",
+            verification_date="15.01.2024",
+            valid_date="15.01.2025",
+            period_range="15.01.2024-15.01.2025",
             result_docnum="C-TEST/01-15-2024/123456789",
             processing_status=ProcessingStatus.MATCHED,
             excel_source_row=1
@@ -68,3 +70,5 @@ def test_generate_report_includes_certificate_number(report_generator, tmp_path)
     df = pd.read_excel(generated_path)
     assert "Номер свидетельства" in df.columns
     assert df.at[0, "Номер свидетельства"] == "C-TEST/01-15-2024/123456789"
+    assert "Период поверки" in df.columns
+    assert df.at[0, "Период поверки"] == "15.01.2024-15.01.2025"

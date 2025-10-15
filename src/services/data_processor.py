@@ -11,6 +11,7 @@ from src.models.processing_task import ProcessingTask, ProcessingTaskStatus
 from src.models.report import ProcessingStatus, Report
 from src.services.arshin_client import ArshinClientService
 from src.services.excel_parser import ExcelParserService
+from src.utils.date_utils import compose_period_range, format_date_ddmmyyyy
 from src.utils.logging_config import app_logger
 from src.utils.validators import validate_certificate_format
 
@@ -72,6 +73,11 @@ class DataProcessorService:
     async def _process_single_record(self, excel_record: ExcelRegistryData, row_number: int) -> Report:
         """Process a single Excel row against Arшин registry."""
         try:
+            excel_verification_str = format_date_ddmmyyyy(excel_record.verification_date)
+            excel_valid_str = format_date_ddmmyyyy(excel_record.valid_until_date)
+            excel_valid_value = excel_valid_str or None
+            excel_period = compose_period_range(excel_verification_str, excel_valid_str)
+
             if not validate_certificate_format(excel_record.certificate_number):
                 return Report(
                     arshin_id=None,
@@ -80,16 +86,9 @@ class DataProcessorService:
                     mit_title=None,
                     mit_notation=None,
                     mi_number=excel_record.serial_number or "",
-                    verification_date=(
-                        excel_record.verification_date.strftime("%Y-%m-%d")
-                        if excel_record.verification_date
-                        else ""
-                    ),
-                    valid_date=(
-                        excel_record.valid_until_date.strftime("%Y-%m-%d")
-                        if excel_record.valid_until_date
-                        else None
-                    ),
+                    verification_date=excel_verification_str,
+                    valid_date=excel_valid_value,
+                    period_range=excel_period,
                     result_docnum=excel_record.certificate_number,
                     source_certificate_number=excel_record.certificate_number,
                     certificate_updated=False,
@@ -116,16 +115,9 @@ class DataProcessorService:
                     mit_title=None,
                     mit_notation=None,
                     mi_number=excel_record.serial_number or "",
-                    verification_date=(
-                        excel_record.verification_date.strftime("%Y-%m-%d")
-                        if excel_record.verification_date
-                        else ""
-                    ),
-                    valid_date=(
-                        excel_record.valid_until_date.strftime("%Y-%m-%d")
-                        if excel_record.valid_until_date
-                        else None
-                    ),
+                    verification_date=excel_verification_str,
+                    valid_date=excel_valid_value,
+                    period_range=excel_period,
                     result_docnum=excel_record.certificate_number,
                     source_certificate_number=excel_record.certificate_number,
                     certificate_updated=False,
@@ -152,8 +144,17 @@ class DataProcessorService:
                 normalized_source_doc = (excel_record.certificate_number or "").strip()
                 normalized_result_doc = (arshin_record.result_docnum or "").strip()
                 certificate_updated = bool(normalized_result_doc) and normalized_result_doc != normalized_source_doc
+                stage2_successful = getattr(arshin_record, "stage2_successful", True)
+                modification_relaxed = getattr(arshin_record, "modification_relaxed", False)
+                notation_relaxed = getattr(arshin_record, "notation_relaxed", False)
 
                 arshin_verification_date = arshin_record.verification_date
+                formatted_verification = format_date_ddmmyyyy(arshin_verification_date)
+                preferred_valid_dt = arshin_record.valid_date or excel_record.valid_until_date
+                formatted_valid = format_date_ddmmyyyy(preferred_valid_dt)
+                valid_value = formatted_valid or None
+                period_range = compose_period_range(formatted_verification, formatted_valid)
+
                 if (
                     skip_due_to_current_year
                     and arshin_verification_date
@@ -163,6 +164,12 @@ class DataProcessorService:
                     certificate_updated = False
                     normalized_result_doc = normalized_source_doc
 
+                if not stage2_successful:
+                    certificate_updated = False
+                    normalized_result_doc = normalized_source_doc
+
+                uncertain_update = bool((modification_relaxed or notation_relaxed) and certificate_updated)
+
                 return Report(
                     arshin_id=arshin_record.vri_id,
                     org_title=arshin_record.org_title,
@@ -170,19 +177,16 @@ class DataProcessorService:
                     mit_title=arshin_record.mit_title,
                     mit_notation=arshin_record.mit_notation,
                     mi_number=arshin_record.mi_number,
-                    verification_date=arshin_record.verification_date.strftime("%Y-%m-%d"),
-                    valid_date=(
-                        arshin_record.valid_date.strftime("%Y-%m-%d")
-                        if arshin_record.valid_date
-                        else (
-                            excel_record.valid_until_date.strftime("%Y-%m-%d")
-                            if excel_record.valid_until_date
-                            else None
-                        )
-                    ),
+                    verification_date=formatted_verification,
+                    valid_date=valid_value,
+                    period_range=period_range,
                     result_docnum=normalized_result_doc,
                     source_certificate_number=excel_record.certificate_number,
                     certificate_updated=certificate_updated,
+                    stage2_successful=stage2_successful,
+                    modification_relaxed=modification_relaxed,
+                    notation_relaxed=notation_relaxed,
+                    uncertain_update=uncertain_update,
                     processing_status=ProcessingStatus.MATCHED,
                     excel_source_row=row_number,
                 )
@@ -194,16 +198,9 @@ class DataProcessorService:
                 mit_title=None,
                 mit_notation=None,
                 mi_number=excel_record.serial_number or "",
-                verification_date=(
-                    excel_record.verification_date.strftime("%Y-%m-%d")
-                    if excel_record.verification_date
-                    else ""
-                ),
-                valid_date=(
-                    excel_record.valid_until_date.strftime("%Y-%m-%d")
-                    if excel_record.valid_until_date
-                    else None
-                ),
+                verification_date=excel_verification_str,
+                valid_date=excel_valid_value,
+                period_range=excel_period,
                 result_docnum=None,
                 source_certificate_number=excel_record.certificate_number,
                 certificate_updated=False,
@@ -224,16 +221,9 @@ class DataProcessorService:
                 mit_title=None,
                 mit_notation=None,
                 mi_number=excel_record.serial_number or "",
-                verification_date=(
-                    excel_record.verification_date.strftime("%Y-%m-%d")
-                    if excel_record.verification_date
-                    else ""
-                ),
-                valid_date=(
-                    excel_record.valid_until_date.strftime("%Y-%m-%d")
-                    if excel_record.valid_until_date
-                    else None
-                ),
+                verification_date=excel_verification_str,
+                valid_date=excel_valid_value,
+                period_range=excel_period,
                 result_docnum=None,
                 source_certificate_number=excel_record.certificate_number,
                 certificate_updated=False,

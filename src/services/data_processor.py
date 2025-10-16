@@ -452,12 +452,18 @@ class DataProcessorService:
         verification_date_column: str = "Дата поверки",
         certificate_number_column: str = "Наличие документа с отметкой о поверке (№ св-ва о поверке)",
         sheet_name: str = "Перечень",
+        existing_task: Optional[ProcessingTask] = None,
     ) -> list[Report]:
         if not task_id:
             task_id = str(uuid.uuid4())
 
         start_time = time.perf_counter()
-        task = self.create_processing_task(file_path, task_id)
+        if existing_task is not None:
+            task = existing_task
+            task.task_id = task_id
+            task.file_path = file_path
+        else:
+            task = self.create_processing_task(file_path, task_id)
         task.status = ProcessingTaskStatus.PROCESSING
 
         try:

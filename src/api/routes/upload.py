@@ -193,7 +193,8 @@ async def process_file_background(
             task_id,
             verification_date_column,
             certificate_number_column,
-            sheet_name
+            sheet_name,
+            existing_task=task,
         )
 
         statistics = data_processor._compute_processing_statistics(reports)
@@ -238,6 +239,8 @@ async def process_file_background(
         task.result_path = result_file_path
         task.preview_path = dataset_file_path
         task.summary = statistics
+        task.status = ProcessingTaskStatus.COMPLETED
+        task.progress = 100
         task.completed_at = datetime.now(timezone.utc)
 
         completion_message = "Формирование итогового отчёта завершено"

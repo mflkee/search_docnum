@@ -50,6 +50,34 @@
     not_found: document.getElementById('summaryMissing'),
     duration: document.getElementById('summaryDuration'),
   };
+  const chipRefs = {
+    updated: null,
+    unchanged: null,
+    not_found: null,
+  };
+  let rawRecords = [];
+  let filteredRecords = [];
+  const filters = {};
+  let currentSort = { key: null, direction: 'none' };
+  let pollingHandle = null;
+  let eventSource = null;
+  let sseActive = false;
+  const LOG_HISTORY_LIMIT = 500;
+  const logCache = new Set();
+  const logOrder = [];
+  let tableInitialized = false;
+  let datasetLoaded = false;
+  let datasetLoading = false;
+  let lastLoggedProgress = null;
+  let lastLoggedStatus = null;
+  let lastLoggedProcessed = null;
+  let lastSummarySnapshot = null;
+  let terminalInitialized = false;
+  let completionSummaryLogged = false;
+  let failureLogged = false;
+  let idleWarningLogged = false;
+  let lastProgressChange = Date.now();
+  let lastStatusErrorLoggedAt = 0;
 
   initializeTerminal();
   recordLogEntry(currentProgress, currentStatus);
@@ -114,30 +142,6 @@
   ];
 
   const columnsMap = Object.fromEntries(columns.map(column => [column.key, column]));
-
-  let rawRecords = [];
-  let filteredRecords = [];
-  const filters = {};
-  let currentSort = { key: null, direction: 'none' };
-  let pollingHandle = null;
-  let eventSource = null;
-  let sseActive = false;
-  const LOG_HISTORY_LIMIT = 500;
-  const logCache = new Set();
-  const logOrder = [];
-  let tableInitialized = false;
-  let datasetLoaded = false;
-  let datasetLoading = false;
-  let lastLoggedProgress = null;
-  let lastLoggedStatus = null;
-  let lastLoggedProcessed = null;
-  let lastSummarySnapshot = null;
-  let terminalInitialized = false;
-  let completionSummaryLogged = false;
-  let failureLogged = false;
-  let idleWarningLogged = false;
-  let lastProgressChange = Date.now();
-  let lastStatusErrorLoggedAt = 0;
 
   const initialSummary = safeParseJSON(root.dataset.summary) || {};
   hydrateSummary(initialSummary);
@@ -797,14 +801,27 @@
       return { days: null, display: null };
     }
     const days = Math.round(diffMs / (1000 * 60 * 60 * 24));
-    const years = Math.floor(days / 365);
-    const months = Math.floor((days % 365) / 30);
-    const residualDays = Math.max(days - years * 365 - months * 30, 0);
-    const parts = [];
-    if (years) parts.push(`${years}г`);
-    if (months) parts.push(`${months}м`);
-    if (residualDays || parts.length === 0) parts.push(`${residualDays}д`);
-    return { days, display: `${days} дн / ${parts.join(' ')}` };
+    if (!Number.isFinite(days) || days <= 0) {
+      return { days: null, display: null };
+    }
+    const yearsApprox = days / 365;
+    const yearsRounded = Math.round(yearsApprox);
+    if (yearsRounded <= 0) {
+      return { days, display: 'Менее года' };
+    }
+    return { days, display: `${yearsRounded} ${pluralizeYears(yearsRounded)}` };
+  }
+
+  function pluralizeYears(value) {
+    const mod10 = value % 10;
+    const mod100 = value % 100;
+    if (mod10 === 1 && mod100 !== 11) {
+      return 'год';
+    }
+    if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) {
+      return 'года';
+    }
+    return 'лет';
   }
 
   function parseIsoDate(value) {

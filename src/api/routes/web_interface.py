@@ -167,4 +167,9 @@ async def stream_task_progress(task_id: str):
     }
 
     stream = ProgressNotifier.stream(task_id, initial_payload)
-    return StreamingResponse(stream, media_type="text/event-stream", headers={"Cache-Control": "no-store"})
+    headers = {
+        "Cache-Control": "no-store",
+        "Connection": "keep-alive",
+        "X-Accel-Buffering": "no",
+    }
+    return StreamingResponse(stream, media_type="text/event-stream", headers=headers)

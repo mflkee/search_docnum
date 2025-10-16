@@ -133,7 +133,7 @@ document.addEventListener('DOMContentLoaded', function() {
         return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
     }
     
-    // Helper function to save recent task (same as in main.js)
+    // Helper function to save recent task
     function saveRecentTask(taskId) {
         let recentTasks = JSON.parse(localStorage.getItem('recentTasks') || '[]');
         

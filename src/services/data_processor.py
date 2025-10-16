@@ -399,6 +399,8 @@ class DataProcessorService:
         task.progress = new_progress
         if status:
             task.status = status
+        if summary is not None:
+            task.summary = summary
         progress_delta = abs(new_progress - previous_progress)
         should_log_info = (
             new_progress in {0, 100}
@@ -419,6 +421,12 @@ class DataProcessorService:
                 *log_args,
             )
 
+        if log_message:
+            task.last_log_message = log_message
+            task.log_messages.append(log_message)
+            if len(task.log_messages) > 200:
+                task.log_messages = task.log_messages[-200:]
+
         snapshot_summary = summary if summary is not None else (task.summary or {})
         payload: dict[str, Any] = {
             "type": "progress",
@@ -428,6 +436,8 @@ class DataProcessorService:
             "processed": processed,
             "total": total,
             "summary": snapshot_summary,
+            "log_messages": task.log_messages[-50:],
+            "last_log_message": task.last_log_message,
         }
         if log_message:
             payload["log"] = log_message

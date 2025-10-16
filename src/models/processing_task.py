@@ -2,7 +2,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Optional
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 
 class ProcessingTaskStatus(str, Enum):
@@ -29,6 +29,8 @@ class ProcessingTask(BaseModel):
     total_records: Optional[int] = None
     processed_records: int = 0
     processing_time_seconds: Optional[float] = None
+    log_messages: list[str] = Field(default_factory=list)
+    last_log_message: Optional[str] = None
 
     @field_validator('progress')
     @classmethod

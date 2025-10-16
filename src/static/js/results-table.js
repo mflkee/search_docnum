@@ -42,15 +42,6 @@
   const tableBody = document.getElementById('resultsTableBody');
   const emptyState = document.getElementById('emptyState');
   const resetBtn = document.getElementById('resetTableBtn');
-  const chipsNode = document.getElementById('statusChips');
-
-  const chipRefs = chipsNode
-    ? {
-        updated: chipsNode.querySelector('[data-chip="updated"]'),
-        unchanged: chipsNode.querySelector('[data-chip="unchanged"]'),
-        not_found: chipsNode.querySelector('[data-chip="not_found"]'),
-      }
-    : {};
 
   const summaryNodes = {
     processed: document.getElementById('summaryTotal'),
@@ -131,6 +122,9 @@
   let pollingHandle = null;
   let eventSource = null;
   let sseActive = false;
+  const LOG_HISTORY_LIMIT = 500;
+  const logCache = new Set();
+  const logOrder = [];
   let tableInitialized = false;
   let datasetLoaded = false;
   let datasetLoading = false;
@@ -153,10 +147,11 @@
     loadDataset();
   }
 
+  if (statusUrl) {
+    startStatusPolling();
+  }
   if (streamUrl && typeof EventSource !== 'undefined') {
     initEventSource();
-  } else if (statusUrl) {
-    startStatusPolling();
   }
 
   if (downloadLink && downloadLink.classList.contains('disabled') === false && downloadHref) {
@@ -180,12 +175,12 @@
       eventSource.onopen = () => {
         sseActive = true;
         stopStatusPolling();
-        appendLogLine('Подключение к каналу событий установлено.');
+      pushLog('Подключение к каналу событий установлено.');
       };
       eventSource.onerror = error => {
         console.warn('Stream connection error', error);
         if (sseActive) {
-          appendLogLine('⚠ Соединение с каналом событий потеряно. Перехожу к опросу статуса.');
+      pushLog('⚠ Соединение с каналом событий потеряно. Перехожу к опросу статуса.');
         }
         sseActive = false;
         if (eventSource) {
@@ -210,10 +205,7 @@
   }
 
   function startStatusPolling() {
-    if (!statusUrl || eventSource) {
-      return;
-    }
-    if (!statusUrl) {
+    if (!statusUrl || pollingHandle) {
       return;
     }
     pollStatus();
@@ -261,13 +253,14 @@
 
         updateProgressUI(progress, status, processedRecords, totalRecords);
         hydrateSummary(payload.summary || {});
+        ingestLogs(payload);
 
         const summarySignature = JSON.stringify(payload.summary || {});
         if (summarySignature !== lastSummarySnapshot && summarySignature !== undefined) {
           lastSummarySnapshot = summarySignature;
           if (payload.summary && typeof payload.summary.processed === 'number') {
             const totalLabel = payload.summary.total ?? totalRecords ?? '—';
-            appendLogLine(`Пройдено записей: ${payload.summary.processed}${totalLabel ? ` / ${totalLabel}` : ''}`);
+          pushLog(`Пройдено записей: ${payload.summary.processed}${totalLabel ? ` / ${totalLabel}` : ''}`);
           }
         }
 
@@ -280,7 +273,7 @@
 
         const now = Date.now();
         if (status === 'PROCESSING' && now - lastProgressChange > 8000 && !idleWarningLogged) {
-          appendLogLine('Ожидаю ответ от сервиса Аршин... возможны сетевые задержки.');
+          pushLog('Ожидаю ответ от сервиса Аршин... возможны сетевые задержки.');
           idleWarningLogged = true;
         }
 
@@ -312,7 +305,7 @@
         console.warn('Status polling error', error);
         const nowTs = Date.now();
         if (nowTs - lastStatusErrorLoggedAt >= HEARTBEAT_INTERVAL_MS) {
-          appendLogLine('⚠ Не удалось получить статус задачи. Повторяю запрос...');
+          pushLog('⚠ Не удалось получить статус задачи. Повторяю запрос...');
           lastStatusErrorLoggedAt = nowTs;
         }
       });
@@ -336,15 +329,13 @@
         }
         enableDownload();
       }
-      if (payload.log) {
-        appendLogLine(payload.log);
-      }
+      ingestLogs(payload);
       return;
     }
 
     if (payloadType === 'log') {
       if (payload.log) {
-        appendLogLine(payload.log);
+        pushLog(payload.log);
       }
       return;
     }
@@ -360,16 +351,7 @@
       hydrateSummary(payload.summary);
     }
 
-    if (payload.log) {
-      appendLogLine(payload.log);
-    }
-
-    if (payload.report) {
-      const reportLine = renderReportLog(payload.report);
-      if (reportLine) {
-        appendLogLine(reportLine);
-      }
-    }
+    ingestLogs(payload);
 
     if (payload.dataset_available && !datasetLoaded) {
       datasetUrl = defaultDatasetUrl || datasetUrl || (taskId ? `/api/v1/results/${taskId}/dataset` : '');
@@ -380,6 +362,32 @@
     if (payload.result_available) {
       enableDownload();
     }
+  }
+
+  function ingestLogs(payload) {
+    if (!payload || typeof payload !== 'object') {
+      return;
+    }
+    const collected = [];
+    if (Array.isArray(payload.log_messages)) {
+      collected.push(...payload.log_messages);
+    }
+    if (Array.isArray(payload.logs)) {
+      collected.push(...payload.logs);
+    }
+    if (typeof payload.log === 'string') {
+      collected.push(payload.log);
+    }
+    if (typeof payload.last_log_message === 'string') {
+      collected.push(payload.last_log_message);
+    }
+    if (payload.report) {
+      const reportLine = renderReportLog(payload.report);
+      if (reportLine) {
+        collected.push(reportLine);
+      }
+    }
+    collected.forEach(pushLog);
   }
 
   function loadDataset() {
@@ -414,13 +422,13 @@
           tablePanel.hidden = false;
         }
         updateProgressUI(100, 'COMPLETED', processedRecords, totalRecords);
-      appendLogLine('Набор данных загружен. Таблица готова к просмотру.');
+      pushLog('Набор данных загружен. Таблица готова к просмотру.');
     })
       .catch(error => {
         datasetLoading = false;
         console.error(error);
         showDatasetError('Не удалось загрузить данные предпросмотра. Повторная попытка...');
-        appendLogLine('⚠ Не удалось загрузить предпросмотр данных. Ожидаю повторную попытку.');
+        pushLog('⚠ Не удалось загрузить предпросмотр данных. Ожидаю повторную попытку.');
         throw error;
       });
   }
@@ -892,14 +900,14 @@
     }
     const statusText = STATUS_LABELS[statusValue] || statusValue;
     const totalLabel = totalRecords > 0 ? `${processedRecords}/${totalRecords}` : `${processedRecords}`;
-    appendLogLine(`${statusText} · ${totalLabel} · ${progressValue}%`);
+    pushLog(`${statusText} · ${totalLabel} · ${progressValue}%`);
     lastLoggedProgress = progressValue;
     lastLoggedStatus = statusValue;
     lastLoggedProcessed = processedRecords;
     lastProgressChange = Date.now();
     idleWarningLogged = false;
     if (statusValue === 'FAILED' && !failureLogged) {
-      appendLogLine('Обработка остановлена с ошибкой. Проверьте подробности в журнале.');
+      pushLog('Обработка остановлена с ошибкой. Проверьте подробности в журнале.');
       failureLogged = true;
     }
     if (statusValue !== 'FAILED') {
@@ -908,6 +916,24 @@
     if (statusValue !== 'COMPLETED') {
       completionSummaryLogged = false;
     }
+  }
+
+  function pushLog(message) {
+    if (!message || typeof message !== 'string') {
+      return;
+    }
+    if (logCache.has(message)) {
+      return;
+    }
+    logCache.add(message);
+    logOrder.push(message);
+    if (logOrder.length > LOG_HISTORY_LIMIT) {
+      const oldest = logOrder.shift();
+      if (oldest) {
+        logCache.delete(oldest);
+      }
+    }
+    appendLogLine(message);
   }
 
   function appendLogLine(message) {
@@ -988,7 +1014,7 @@
       currentStatus === 'COMPLETED' &&
       !completionSummaryLogged
     ) {
-      appendLogLine(`Обработка завершена. Время выполнения: ${formatDuration(durationSeconds)}.`);
+      pushLog(`Обработка завершена. Время выполнения: ${formatDuration(durationSeconds)}.`);
       completionSummaryLogged = true;
     }
   }

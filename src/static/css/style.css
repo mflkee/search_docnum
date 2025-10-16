@@ -107,6 +107,16 @@ body {
     gap: 1rem;
 }
 
+.terminal-grid__item {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+}
+
+.terminal-grid__item .terminal-label {
+    margin-bottom: 0;
+}
+
 .terminal-grid .terminal-input {
     width: 100%;
 }

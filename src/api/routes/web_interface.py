@@ -162,6 +162,8 @@ async def stream_task_progress(task_id: str):
         "summary": task.summary or {},
         "dataset_available": dataset_available,
         "result_available": result_available,
+        "log_messages": task.log_messages[-50:] if task.log_messages else [],
+        "last_log_message": task.last_log_message,
     }
 
     stream = ProgressNotifier.stream(task_id, initial_payload)

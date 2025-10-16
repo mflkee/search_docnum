@@ -163,6 +163,10 @@ async def process_file_background(
         task.progress = 5  # Start at 5% to show processing began
 
         app_logger.info(f"Starting background processing for task {task_id}")
+        start_message = "Файл принят, начинается обработка"
+        task.log_messages.append(start_message)
+        task.last_log_message = start_message
+
         await ProgressNotifier.broadcast(
             task_id,
             {
@@ -173,7 +177,9 @@ async def process_file_background(
                 "processed": task.processed_records or 0,
                 "total": task.total_records or 0,
                 "summary": task.summary or {},
-                "log": "Файл принят, начинается обработка",
+                "log": start_message,
+                "log_messages": task.log_messages[-50:],
+                "last_log_message": start_message,
             },
         )
 
@@ -234,6 +240,12 @@ async def process_file_background(
         task.summary = statistics
         task.completed_at = datetime.now(timezone.utc)
 
+        completion_message = "Формирование итогового отчёта завершено"
+        task.log_messages.append(completion_message)
+        if len(task.log_messages) > 200:
+            task.log_messages = task.log_messages[-200:]
+        task.last_log_message = completion_message
+
         await ProgressNotifier.broadcast(
             task_id,
             {
@@ -244,7 +256,9 @@ async def process_file_background(
                 "dataset_available": True,
                 "result_available": True,
                 "summary": statistics,
-                "log": "Формирование итогового отчёта завершено",
+                "log": completion_message,
+                "log_messages": task.log_messages[-50:],
+                "last_log_message": completion_message,
             },
         )
 
@@ -272,6 +286,11 @@ async def process_file_background(
             task.error_message = str(e)
             task.progress = 100  # Mark as complete (with failure)
             task.completed_at = datetime.now(timezone.utc)
+            failure_message = f"Обработка остановлена ошибкой: {e}"
+            task.log_messages.append(failure_message)
+            if len(task.log_messages) > 200:
+                task.log_messages = task.log_messages[-200:]
+            task.last_log_message = failure_message
             await ProgressNotifier.broadcast(
                 task_id,
                 {
@@ -282,7 +301,9 @@ async def process_file_background(
                     "processed": task.processed_records or 0,
                     "total": task.total_records or 0,
                     "summary": task.summary or {},
-                    "log": f"Обработка остановлена ошибкой: {e}",
+                    "log": failure_message,
+                    "log_messages": task.log_messages[-50:],
+                    "last_log_message": failure_message,
                 },
             )
     finally:

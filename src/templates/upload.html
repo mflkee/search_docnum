@@ -22,14 +22,18 @@
         <fieldset class="terminal-fieldset">
             <legend>2. Параметры колонок</legend>
             <div class="terminal-grid">
-                <label class="terminal-label" for="verificationDateColumn">Колонка "Дата поверки"</label>
-                <input type="text" class="form-control terminal-input" id="verificationDateColumn" name="verification_date_column" value="Дата поверки" placeholder="например, AE или Дата поверки">
-
-                <label class="terminal-label" for="certificateNumberColumn">Колонка "№ свидетельства"</label>
-                <input type="text" class="form-control terminal-input" id="certificateNumberColumn" name="certificate_number_column" value="Наличие документа с отметкой о поверке (№ св-ва о поверке)" placeholder="например, AI или полное название">
-
-                <label class="terminal-label" for="sheetName">Лист Excel</label>
-                <input type="text" class="form-control terminal-input" id="sheetName" name="sheet_name" value="Перечень" placeholder="Название листа, по умолчанию «Перечень»">
+                <div class="terminal-grid__item">
+                    <label class="terminal-label" for="verificationDateColumn">Колонка "Дата поверки"</label>
+                    <input type="text" class="form-control terminal-input" id="verificationDateColumn" name="verification_date_column" value="Дата поверки" placeholder="например, AE или «Дата поверки»">
+                </div>
+                <div class="terminal-grid__item">
+                    <label class="terminal-label" for="certificateNumberColumn">Колонка "№ свидетельства"</label>
+                    <input type="text" class="form-control terminal-input" id="certificateNumberColumn" name="certificate_number_column" value="Наличие документа с отметкой о поверке (№ св-ва о поверке)" placeholder="например, AI или полное название">
+                </div>
+                <div class="terminal-grid__item">
+                    <label class="terminal-label" for="sheetName">Лист Excel</label>
+                    <input type="text" class="form-control terminal-input" id="sheetName" name="sheet_name" value="Перечень" placeholder="Название листа, по умолчанию «Перечень»">
+                </div>
             </div>
         </fieldset>
 

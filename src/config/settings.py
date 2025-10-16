@@ -18,9 +18,13 @@ class Settings(BaseSettings):
     task_timeout: int = 300  # 5 minutes in seconds
 
     # Rate limiting for Arshin API
-    arshin_api_rate_limit: int = 240  # requests per minute
-    arshin_api_rate_period: int = 60  # seconds
-    arshin_max_concurrent_requests: int = 60  # simultaneous API requests
+    arshin_api_rate_limit: int = 0  # requests per period (0 disables throttling)
+    arshin_api_rate_period: int = 1  # seconds
+    arshin_api_rate_penalty_limit: int = 0  # fallback window size after 429/timeout (0 disables penalty)
+    arshin_api_rate_penalty_duration: int = 30  # seconds to keep penalty in effect
+    arshin_api_timeout_seconds: float = 45.0  # HTTP timeout for Arshin requests
+    arshin_max_concurrent_requests: int = 24  # simultaneous API requests (governed by throttler)
+    arshin_stage2_batch_size: int = 2  # Stage 2 attempts executed concurrently per batch
 
     # Celery settings (if used)
     celery_broker_url: str = "redis://localhost:6379"

@@ -24,7 +24,7 @@ document.addEventListener('DOMContentLoaded', function() {
             
             // Validate file
             if (!fileInput.files[0]) {
-                showError('Please select a file to upload');
+                showError('Выберите файл для загрузки.');
                 return;
             }
             
@@ -34,14 +34,14 @@ document.addEventListener('DOMContentLoaded', function() {
             const allowedTypes = ['.xlsx', '.xls'];
             const fileExtension = '.' + file.name.split('.').pop().toLowerCase();
             if (!allowedTypes.includes(fileExtension)) {
-                showError(`Invalid file type. Only ${allowedTypes.join(', ')} files are allowed.`);
+                showError(`Неверный тип файла. Допустимы только ${allowedTypes.join(', ')}.`);
                 return;
             }
             
             // Validate file size (100MB max)
             const maxSize = 100 * 1024 * 1024; // 100MB in bytes
             if (file.size > maxSize) {
-                showError(`File size exceeds maximum allowed size of 100MB (${formatFileSize(file.size)} provided)`);
+                showError(`Размер файла превышает 100 МБ (сейчас ${formatFileSize(file.size)}).`);
                 return;
             }
             
@@ -91,15 +91,15 @@ document.addEventListener('DOMContentLoaded', function() {
                         window.location.href = `/results/${response.task_id}`;
                         return;
                     } else {
-                        showError(response.detail || 'Upload failed');
+                        showError(response.detail || 'Не удалось загрузить файл.');
                     }
                 } else {
                     // Error response
                     try {
                         const response = JSON.parse(xhr.responseText);
-                        showError(response.detail || `Upload failed with status ${xhr.status}`);
+                        showError(response.detail || `Ошибка загрузки (статус ${xhr.status}).`);
                     } catch (e) {
-                        showError(`Upload failed with status ${xhr.status}`);
+                        showError(`Ошибка загрузки (статус ${xhr.status}).`);
                     }
                 }
             });
@@ -107,7 +107,7 @@ document.addEventListener('DOMContentLoaded', function() {
             // Handle errors
             xhr.addEventListener('error', function() {
                 uploadProgress.style.display = 'none';
-                showError('Upload failed due to network error');
+                showError('Загрузка прервана из-за сетевой ошибки.');
             });
             
             // Send the request
@@ -119,7 +119,8 @@ document.addEventListener('DOMContentLoaded', function() {
     // Helper function to show error messages
     function showError(message) {
         uploadProgress.style.display = 'none';
-        errorDiv.style.display = 'block';
+        errorDiv.hidden = false;
+        errorDiv.style.display = '';
         document.getElementById('errorMessage').textContent = message;
     }
     

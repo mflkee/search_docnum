@@ -12,6 +12,7 @@ from src.config.settings import settings
 from src.models.processing_task import ProcessingTask, ProcessingTaskStatus
 from src.services.data_processor import DataProcessorService
 from src.services.file_validator import FileValidator
+from src.services.progress_notifier import ProgressNotifier
 from src.services.report_generator import ReportGeneratorService
 from src.utils.logging_config import app_logger
 from src.utils.web_utils import create_file_path, log_user_action, sanitize_filename
@@ -162,6 +163,19 @@ async def process_file_background(
         task.progress = 5  # Start at 5% to show processing began
 
         app_logger.info(f"Starting background processing for task {task_id}")
+        await ProgressNotifier.broadcast(
+            task_id,
+            {
+                "type": "progress",
+                "task_id": task_id,
+                "status": task.status.value,
+                "progress": task.progress,
+                "processed": task.processed_records or 0,
+                "total": task.total_records or 0,
+                "summary": task.summary or {},
+                "log": "Файл принят, начинается обработка",
+            },
+        )
 
         # Initialize services
         data_processor = DataProcessorService()
@@ -177,6 +191,12 @@ async def process_file_background(
         )
 
         statistics = data_processor._compute_processing_statistics(reports)
+        duration_seconds = round(data_processor.last_processing_duration, 2)
+        statistics["errors"] = statistics.get("errors", 0)
+        statistics["invalid_format"] = statistics.get("invalid_format", 0)
+        statistics["processing_time_seconds"] = duration_seconds
+        statistics["total"] = statistics.get("processed", 0)
+
         task.summary = {
             "processed": statistics.get("processed", 0),
             "updated": statistics.get("updated", 0),
@@ -184,10 +204,13 @@ async def process_file_background(
             "not_found": statistics.get("not_found", 0),
             "errors": statistics.get("errors", 0),
             "invalid_format": statistics.get("invalid_format", 0),
+            "total": statistics.get("processed", 0),
+            "processing_time_seconds": duration_seconds,
         }
         task.processed_records = statistics.get("processed", 0)
         if task.total_records is None:
             task.total_records = statistics.get("processed", 0)
+        task.processing_time_seconds = data_processor.last_processing_duration
 
         # Persist dataset preview for UI consumption
         dataset_payload = {
@@ -201,9 +224,6 @@ async def process_file_background(
         with open(dataset_file_path, 'w', encoding='utf-8') as dataset_file:
             json.dump(dataset_payload, dataset_file, ensure_ascii=False)
 
-        # Update task progress to 90% - nearly complete
-        task.progress = 90
-
         # Generate the report file
         result_file_path = create_file_path('result', f"report_{task_id}.xlsx")
         report_generator.generate_report(reports, result_file_path)
@@ -212,11 +232,28 @@ async def process_file_background(
         task.result_path = result_file_path
         task.preview_path = dataset_file_path
         task.summary = statistics
-        task.progress = 100
-        task.status = ProcessingTaskStatus.COMPLETED
         task.completed_at = datetime.now(timezone.utc)
 
-        app_logger.info(f"Completed processing for task {task_id}, result at {result_file_path}")
+        await ProgressNotifier.broadcast(
+            task_id,
+            {
+                "type": "dataset",
+                "task_id": task_id,
+                "status": task.status.value,
+                "progress": task.progress,
+                "dataset_available": True,
+                "result_available": True,
+                "summary": statistics,
+                "log": "Формирование итогового отчёта завершено",
+            },
+        )
+
+        app_logger.info(
+            "Completed processing for task %s in %.2f seconds, result at %s",
+            task_id,
+            data_processor.last_processing_duration,
+            result_file_path,
+        )
 
         # Clean up the original uploaded file
         try:
@@ -235,6 +272,19 @@ async def process_file_background(
             task.error_message = str(e)
             task.progress = 100  # Mark as complete (with failure)
             task.completed_at = datetime.now(timezone.utc)
+            await ProgressNotifier.broadcast(
+                task_id,
+                {
+                    "type": "progress",
+                    "task_id": task_id,
+                    "status": task.status.value,
+                    "progress": task.progress,
+                    "processed": task.processed_records or 0,
+                    "total": task.total_records or 0,
+                    "summary": task.summary or {},
+                    "log": f"Обработка остановлена ошибкой: {e}",
+                },
+            )
     finally:
         if data_processor is not None:
             await data_processor.close()

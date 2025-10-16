@@ -8,6 +8,7 @@
   const defaultDatasetUrl = root.dataset.defaultDatasetUrl || '';
   const defaultDownloadUrl = root.dataset.defaultDownloadUrl || '';
   const statusUrl = root.dataset.statusUrl || '';
+  const streamUrl = root.dataset.streamUrl || '';
   let datasetUrl = root.dataset.datasetUrl || '';
   let currentStatus = root.dataset.status || 'PENDING';
   let currentProgress = Number(root.dataset.progress || 0);
@@ -23,9 +24,11 @@
   };
 
   const ARSHIN_BASE_URL = 'https://fgis.gost.ru/fundmetrology/cm/results/';
+  const STATUS_FETCH_TIMEOUT_MS = 9000;
+  const HEARTBEAT_INTERVAL_MS = 6000;
 
-  const progressPanel = document.getElementById('progressPanel');
-  const progressBar = document.getElementById('progressBar');
+  const terminalPanel = document.getElementById('terminalPanel');
+  const terminalLog = document.getElementById('terminalLog');
   const progressLabel = document.getElementById('progressLabel');
   const statusLabelNode = document.getElementById('statusLabel');
   const tablePanel = document.getElementById('tablePanel');
@@ -33,18 +36,32 @@
   const downloadHref = downloadLink ? downloadLink.dataset.downloadHref || defaultDownloadUrl : defaultDownloadUrl;
   const visibleCounter = document.getElementById('visibleCount');
   const progressDetailed = document.getElementById('progressDetailed');
+  const progressFill = document.getElementById('terminalProgressFill');
   const headerRow = document.getElementById('resultsHeaderRow');
   const filterRow = document.getElementById('resultsFilterRow');
   const tableBody = document.getElementById('resultsTableBody');
   const emptyState = document.getElementById('emptyState');
   const resetBtn = document.getElementById('resetTableBtn');
+  const chipsNode = document.getElementById('statusChips');
+
+  const chipRefs = chipsNode
+    ? {
+        updated: chipsNode.querySelector('[data-chip="updated"]'),
+        unchanged: chipsNode.querySelector('[data-chip="unchanged"]'),
+        not_found: chipsNode.querySelector('[data-chip="not_found"]'),
+      }
+    : {};
 
   const summaryNodes = {
     processed: document.getElementById('summaryTotal'),
     updated: document.getElementById('summaryUpdated'),
     unchanged: document.getElementById('summaryUnchanged'),
     not_found: document.getElementById('summaryMissing'),
+    duration: document.getElementById('summaryDuration'),
   };
+
+  initializeTerminal();
+  recordLogEntry(currentProgress, currentStatus);
 
   const STATUS_CONFIG = {
     updated: { label: 'Обновлено', className: 'status-chip status-chip--updated', rank: 0 },
@@ -112,9 +129,21 @@
   const filters = {};
   let currentSort = { key: null, direction: 'none' };
   let pollingHandle = null;
+  let eventSource = null;
+  let sseActive = false;
   let tableInitialized = false;
   let datasetLoaded = false;
   let datasetLoading = false;
+  let lastLoggedProgress = null;
+  let lastLoggedStatus = null;
+  let lastLoggedProcessed = null;
+  let lastSummarySnapshot = null;
+  let terminalInitialized = false;
+  let completionSummaryLogged = false;
+  let failureLogged = false;
+  let idleWarningLogged = false;
+  let lastProgressChange = Date.now();
+  let lastStatusErrorLoggedAt = 0;
 
   const initialSummary = safeParseJSON(root.dataset.summary) || {};
   hydrateSummary(initialSummary);
@@ -124,7 +153,9 @@
     loadDataset();
   }
 
-  if (statusUrl) {
+  if (streamUrl && typeof EventSource !== 'undefined') {
+    initEventSource();
+  } else if (statusUrl) {
     startStatusPolling();
   }
 
@@ -132,12 +163,61 @@
     enableDownload();
   }
 
+  function initEventSource() {
+    if (!streamUrl || typeof EventSource === 'undefined') {
+      return;
+    }
+    try {
+      eventSource = new EventSource(streamUrl, { withCredentials: false });
+      eventSource.onmessage = event => {
+        try {
+          const payload = JSON.parse(event.data);
+          handleStreamPayload(payload);
+        } catch (parseError) {
+          console.warn('Stream payload parse error', parseError);
+        }
+      };
+      eventSource.onopen = () => {
+        sseActive = true;
+        stopStatusPolling();
+        appendLogLine('Подключение к каналу событий установлено.');
+      };
+      eventSource.onerror = error => {
+        console.warn('Stream connection error', error);
+        if (sseActive) {
+          appendLogLine('⚠ Соединение с каналом событий потеряно. Перехожу к опросу статуса.');
+        }
+        sseActive = false;
+        if (eventSource) {
+          eventSource.close();
+          eventSource = null;
+        }
+        if (statusUrl && !pollingHandle) {
+          startStatusPolling();
+        }
+        setTimeout(() => {
+          if (!eventSource && streamUrl) {
+            initEventSource();
+          }
+        }, 3000);
+      };
+    } catch (err) {
+      console.error('Failed to initialize EventSource', err);
+      if (statusUrl) {
+        startStatusPolling();
+      }
+    }
+  }
+
   function startStatusPolling() {
+    if (!statusUrl || eventSource) {
+      return;
+    }
     if (!statusUrl) {
       return;
     }
     pollStatus();
-    pollingHandle = setInterval(pollStatus, 2000);
+    pollingHandle = setInterval(pollStatus, 1000);
   }
 
   function stopStatusPolling() {
@@ -148,23 +228,60 @@
   }
 
   function pollStatus() {
-    fetch(statusUrl)
+    const controller = new AbortController();
+    const timeoutHandle = setTimeout(() => controller.abort(), STATUS_FETCH_TIMEOUT_MS);
+
+    fetch(statusUrl, {
+      cache: 'no-store',
+      signal: controller.signal,
+    })
       .then(response => response.json())
       .then(payload => {
+        clearTimeout(timeoutHandle);
+        lastStatusErrorLoggedAt = 0;
         if (payload.error) {
           return;
         }
 
         const progress = Number(payload.progress ?? currentProgress);
         const status = payload.status || currentStatus;
-        updateProgressUI(progress, status);
+        const processed = Number(payload.processed_records ?? processedRecords);
+        const total = Number(payload.total_records ?? totalRecords);
+
+        if (!Number.isNaN(processed)) {
+          processedRecords = processed;
+        }
+        if (!Number.isNaN(total)) {
+          totalRecords = total;
+        }
+
+        if (payload.summary && typeof payload.summary.total === 'number') {
+          totalRecords = payload.summary.total;
+        }
+
+        updateProgressUI(progress, status, processedRecords, totalRecords);
         hydrateSummary(payload.summary || {});
+
+        const summarySignature = JSON.stringify(payload.summary || {});
+        if (summarySignature !== lastSummarySnapshot && summarySignature !== undefined) {
+          lastSummarySnapshot = summarySignature;
+          if (payload.summary && typeof payload.summary.processed === 'number') {
+            const totalLabel = payload.summary.total ?? totalRecords ?? '—';
+            appendLogLine(`Пройдено записей: ${payload.summary.processed}${totalLabel ? ` / ${totalLabel}` : ''}`);
+          }
+        }
 
         if (payload.dataset_available) {
           enableDownload();
           if (!datasetUrl) {
             datasetUrl = defaultDatasetUrl || (taskId ? `/api/v1/results/${taskId}/dataset` : '');
           }
+        }
+
+        const now = Date.now();
+        if (status === 'PROCESSING' && now - lastProgressChange > 8000 && !idleWarningLogged) {
+          appendLogLine('Ожидаю ответ от сервиса Аршин... возможны сетевые задержки.');
+          idleWarningLogged = true;
         }
 
         if (status === 'COMPLETED') {
@@ -191,8 +308,78 @@
         }
       })
       .catch(error => {
+        clearTimeout(timeoutHandle);
         console.warn('Status polling error', error);
+        const nowTs = Date.now();
+        if (nowTs - lastStatusErrorLoggedAt >= HEARTBEAT_INTERVAL_MS) {
+          appendLogLine('⚠ Не удалось получить статус задачи. Повторяю запрос...');
+          lastStatusErrorLoggedAt = nowTs;
+        }
       });
+  }
+
+  function handleStreamPayload(payload) {
+    if (!payload || typeof payload !== 'object') {
+      return;
+    }
+
+    const payloadType = payload.type || 'progress';
+
+    if (payloadType === 'dataset') {
+      if (payload.dataset_available) {
+        datasetUrl = defaultDatasetUrl || datasetUrl || (taskId ? `/api/v1/results/${taskId}/dataset` : '');
+        datasetLoaded = false;
+        if (!datasetLoading) {
+          loadDataset().catch(() => {
+            /* swallow */
+          });
+        }
+        enableDownload();
+      }
+      if (payload.log) {
+        appendLogLine(payload.log);
+      }
+      return;
+    }
+
+    if (payloadType === 'log') {
+      if (payload.log) {
+        appendLogLine(payload.log);
+      }
+      return;
+    }
+
+    const nextStatus = payload.status || currentStatus;
+    const nextProgress = typeof payload.progress === 'number' ? payload.progress : currentProgress;
+    const nextProcessed = typeof payload.processed === 'number' ? payload.processed : processedRecords;
+    const nextTotal = typeof payload.total === 'number' ? payload.total : totalRecords;
+
+    updateProgressUI(nextProgress, nextStatus, nextProcessed, nextTotal);
+
+    if (payload.summary && typeof payload.summary === 'object') {
+      hydrateSummary(payload.summary);
+    }
+
+    if (payload.log) {
+      appendLogLine(payload.log);
+    }
+
+    if (payload.report) {
+      const reportLine = renderReportLog(payload.report);
+      if (reportLine) {
+        appendLogLine(reportLine);
+      }
+    }
+
+    if (payload.dataset_available && !datasetLoaded) {
+      datasetUrl = defaultDatasetUrl || datasetUrl || (taskId ? `/api/v1/results/${taskId}/dataset` : '');
+      loadDataset().catch(() => {
+        /* swallow */
+      });
+    }
+    if (payload.result_available) {
+      enableDownload();
+    }
   }
 
   function loadDataset() {
@@ -227,11 +414,13 @@
           tablePanel.hidden = false;
         }
         updateProgressUI(100, 'COMPLETED', processedRecords, totalRecords);
-      })
+      appendLogLine('Набор данных загружен. Таблица готова к просмотру.');
+    })
       .catch(error => {
         datasetLoading = false;
         console.error(error);
         showDatasetError('Не удалось загрузить данные предпросмотра. Повторная попытка...');
+        appendLogLine('⚠ Не удалось загрузить предпросмотр данных. Ожидаю повторную попытку.');
         throw error;
       });
   }
@@ -565,32 +754,30 @@
       totalRecords = total;
     }
 
-    if (progressDetailed) {
-      const totalLabel = totalRecords > 0 ? totalRecords : '—';
-      progressDetailed.dataset.status = status;
-      progressDetailed.textContent = totalRecords ? `${processedRecords} / ${totalLabel}` : `${processedRecords}`;
-    }
-
-    if (!progressPanel) {
-      return;
-    }
     const normalizedProgress = Math.max(0, Math.min(100, Math.round(progress)));
-    if (progressBar) {
-      const width = status === 'COMPLETED' ? 100 : Math.max(5, normalizedProgress);
-      progressBar.style.width = `${width}%`;
-    }
     if (progressLabel) {
       progressLabel.textContent = `${normalizedProgress}%`;
+      progressLabel.dataset.status = status;
+    }
+    if (progressFill) {
+      progressFill.style.width = `${normalizedProgress}%`;
     }
     if (statusLabelNode) {
       statusLabelNode.textContent = STATUS_LABELS[status] || status;
       statusLabelNode.dataset.status = status;
     }
-    if (status === 'COMPLETED' && datasetLoaded) {
-      progressPanel.hidden = true;
-    } else {
-      progressPanel.hidden = false;
+    if (progressDetailed) {
+      const totalLabel = totalRecords > 0 ? totalRecords : '—';
+      progressDetailed.dataset.status = status;
+      progressDetailed.textContent = totalRecords ? `${processedRecords} / ${totalLabel}` : `${processedRecords}`;
     }
+    if (terminalPanel) {
+      terminalPanel.dataset.status = status;
+      terminalPanel.classList.toggle('terminal-panel--completed', status === 'COMPLETED');
+      terminalPanel.classList.toggle('terminal-panel--failed', status === 'FAILED');
+    }
+
+    recordLogEntry(normalizedProgress, status);
   }
 
   function calculateInterval(startDate, endDate) {
@@ -644,6 +831,115 @@
     return null;
   }
 
+  function formatDuration(value) {
+    if (value === null || value === undefined) {
+      return '—';
+    }
+    const seconds = Number(value);
+    if (!Number.isFinite(seconds) || seconds < 0) {
+      return '—';
+    }
+    if (seconds < 60) {
+      return `${seconds.toFixed(2)} с`;
+    }
+    const minutes = Math.floor(seconds / 60);
+    const residualSeconds = seconds % 60;
+    if (minutes < 60) {
+      return residualSeconds >= 1 ? `${minutes} мин ${Math.round(residualSeconds)} с` : `${minutes} мин`;
+    }
+    const hours = Math.floor(minutes / 60);
+    const residualMinutes = minutes % 60;
+    return residualMinutes > 0 ? `${hours} ч ${residualMinutes} мин` : `${hours} ч`;
+  }
+
+  function renderReportLog(report) {
+    if (!report || typeof report !== 'object') {
+      return null;
+    }
+    const rowLabel = report.excel_source_row ?? '—';
+    const status = report.processing_status || '';
+    const cert = report.result_docnum || report.source_certificate_number || '—';
+    const miNumber = report.mi_number || 'без серийного номера';
+
+    switch (status) {
+      case 'MATCHED':
+        if (report.certificate_updated && report.result_docnum) {
+          return `Строка ${rowLabel}: обновлено свидетельство → ${report.result_docnum}`;
+        }
+        return `Строка ${rowLabel}: подтверждено свидетельство ${cert}`;
+      case 'NOT_FOUND':
+        return `Строка ${rowLabel}: запись не найдена (${miNumber})`;
+      case 'INVALID_CERT_FORMAT':
+        return `Строка ${rowLabel}: некорректный номер свидетельства ${cert}`;
+      case 'ERROR':
+        return `Строка ${rowLabel}: ошибка обработки`;
+      default:
+        return `Строка ${rowLabel}: обработка завершена`;
+    }
+  }
+
+  function recordLogEntry(progressValue, statusValue) {
+    if (!terminalLog) {
+      return;
+    }
+    if (
+      lastLoggedProgress === progressValue &&
+      lastLoggedStatus === statusValue &&
+      lastLoggedProcessed === processedRecords &&
+      Date.now() - lastProgressChange < HEARTBEAT_INTERVAL_MS
+    ) {
+      return;
+    }
+    const statusText = STATUS_LABELS[statusValue] || statusValue;
+    const totalLabel = totalRecords > 0 ? `${processedRecords}/${totalRecords}` : `${processedRecords}`;
+    appendLogLine(`${statusText} · ${totalLabel} · ${progressValue}%`);
+    lastLoggedProgress = progressValue;
+    lastLoggedStatus = statusValue;
+    lastLoggedProcessed = processedRecords;
+    lastProgressChange = Date.now();
+    idleWarningLogged = false;
+    if (statusValue === 'FAILED' && !failureLogged) {
+      appendLogLine('Обработка остановлена с ошибкой. Проверьте подробности в журнале.');
+      failureLogged = true;
+    }
+    if (statusValue !== 'FAILED') {
+      failureLogged = false;
+    }
+    if (statusValue !== 'COMPLETED') {
+      completionSummaryLogged = false;
+    }
+  }
+
+  function appendLogLine(message) {
+    if (!terminalLog) {
+      return;
+    }
+    if (!terminalInitialized) {
+      terminalLog.textContent = '';
+      terminalInitialized = true;
+    }
+    const timestamp = formatTimestamp();
+    terminalLog.textContent += `[${timestamp}] ${message}\n`;
+    terminalLog.scrollTop = terminalLog.scrollHeight;
+  }
+
+  function formatTimestamp() {
+    const now = new Date();
+    const hours = now.getHours().toString().padStart(2, '0');
+    const minutes = now.getMinutes().toString().padStart(2, '0');
+    const seconds = now.getSeconds().toString().padStart(2, '0');
+    return `${hours}:${minutes}:${seconds}`;
+  }
+
+  function initializeTerminal() {
+    if (terminalLog && !terminalInitialized) {
+      terminalLog.textContent = '[--:--:--] Консоль инициализирована. Ожидание событий...\n';
+      terminalInitialized = true;
+    }
+    completionSummaryLogged = false;
+    failureLogged = false;
+  }
+
   function debounce(callback, delay) {
     let timeoutId;
     return (...args) => {
@@ -669,11 +965,32 @@
     const updated = summary.updated ?? 0;
     const unchanged = summary.unchanged ?? 0;
     const notFound = summary.not_found ?? summary.missing ?? 0;
+    const durationSeconds = summary.processing_time_seconds ?? summary.processing_time ?? null;
 
     if (summaryNodes.processed) summaryNodes.processed.textContent = processed;
     if (summaryNodes.updated) summaryNodes.updated.textContent = updated;
     if (summaryNodes.unchanged) summaryNodes.unchanged.textContent = unchanged;
     if (summaryNodes.not_found) summaryNodes.not_found.textContent = notFound;
+    if (summaryNodes.duration) summaryNodes.duration.textContent = formatDuration(durationSeconds);
+
+    if (chipRefs.updated) {
+      chipRefs.updated.textContent = `Обновлено: ${updated}`;
+    }
+    if (chipRefs.unchanged) {
+      chipRefs.unchanged.textContent = `Без изменений: ${unchanged}`;
+    }
+    if (chipRefs.not_found) {
+      chipRefs.not_found.textContent = `Не найдено: ${notFound}`;
+    }
+    if (
+      typeof durationSeconds === 'number' &&
+      Number.isFinite(durationSeconds) &&
+      currentStatus === 'COMPLETED' &&
+      !completionSummaryLogged
+    ) {
+      appendLogLine(`Обработка завершена. Время выполнения: ${formatDuration(durationSeconds)}.`);
+      completionSummaryLogged = true;
+    }
   }
 
   function showDatasetError(message) {

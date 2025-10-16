@@ -1,8 +1,9 @@
 import asyncio
 import math
+import time
 import uuid
 from datetime import datetime, timezone
-from typing import Awaitable, Callable, Optional, cast
+from typing import Any, Awaitable, Callable, Optional, cast
 
 from src.config.settings import settings
 from src.models.arshin_record import ArshinRegistryRecord
@@ -11,6 +12,7 @@ from src.models.processing_task import ProcessingTask, ProcessingTaskStatus
 from src.models.report import ProcessingStatus, Report
 from src.services.arshin_client import ArshinClientService
 from src.services.excel_parser import ExcelParserService
+from src.services.progress_notifier import ProgressNotifier
 from src.utils.date_utils import compose_period_range, format_date_ddmmyyyy
 from src.utils.logging_config import app_logger
 from src.utils.validators import validate_certificate_format
@@ -25,6 +27,11 @@ class DataProcessorService:
         self._concurrency_limit = max(1, settings.arshin_max_concurrent_requests)
         self._semaphore = asyncio.Semaphore(self._concurrency_limit)
         self._record_cache: dict[tuple[str, int, Optional[int]], Optional[ArshinRegistryRecord]] = {}
+        self._last_processing_duration: float = 0.0
+
+    @property
+    def last_processing_duration(self) -> float:
+        return self._last_processing_duration
 
     async def process_excel_file(
         self,
@@ -41,6 +48,7 @@ class DataProcessorService:
         app_logger.info(f"Starting processing of file {file_path} with task ID {task_id}")
 
         try:
+            start_time = time.perf_counter()
             excel_data_list = self.excel_parser.parse_excel_file(
                 file_path,
                 verification_date_column,
@@ -51,13 +59,21 @@ class DataProcessorService:
 
             if not excel_data_list:
                 app_logger.warning(f"No valid records found in Excel file {file_path}")
+                self._last_processing_duration = time.perf_counter() - start_time
                 return []
 
             reports = await self._process_records_concurrently(excel_data_list, progress_callback=None)
             self._log_processing_statistics(reports)
+            self._last_processing_duration = time.perf_counter() - start_time
+            app_logger.info(
+                "Completed processing of file %s in %.2f seconds",
+                file_path,
+                self._last_processing_duration,
+            )
             return reports
         except Exception as exc:
             app_logger.error(f"Error processing Excel file {file_path}: {exc}")
+            self._last_processing_duration = 0.0
             raise
 
     @staticmethod
@@ -125,6 +141,11 @@ class DataProcessorService:
                     excel_source_row=row_number,
                 )
 
+            skip_due_to_current_year = bool(
+                excel_record.verification_date and excel_record.verification_date.year >= current_year
+            )
+            skip_stage2_hint = skip_due_to_current_year
+
             cache_key = (excel_record.certificate_number, verification_year, valid_until_year)
             if cache_key in self._record_cache:
                 arshin_record = self._record_cache[cache_key]
@@ -133,12 +154,16 @@ class DataProcessorService:
                     excel_record.certificate_number,
                     verification_year,
                     valid_until_year=valid_until_year,
+                    skip_stage2=skip_stage2_hint,
                 )
+                if arshin_record is None and skip_stage2_hint:
+                    arshin_record = await self.arshin_client.get_instrument_by_certificate(
+                        excel_record.certificate_number,
+                        verification_year,
+                        valid_until_year=valid_until_year,
+                        skip_stage2=False,
+                    )
                 self._record_cache[cache_key] = arshin_record
-
-            skip_due_to_current_year = bool(
-                excel_record.verification_date and excel_record.verification_date.year >= current_year
-            )
 
             if arshin_record:
                 normalized_source_doc = (excel_record.certificate_number or "").strip()
@@ -331,16 +356,84 @@ class DataProcessorService:
             file_path=file_path,
         )
 
+    @staticmethod
+    def _compact_report(report: Report) -> dict[str, Any]:
+        return {
+            "excel_source_row": report.excel_source_row,
+            "processing_status": report.processing_status.value,
+            "certificate_updated": report.certificate_updated,
+            "result_docnum": report.result_docnum,
+            "source_certificate_number": report.source_certificate_number,
+            "arshin_id": report.arshin_id,
+            "mi_number": report.mi_number,
+        }
+
+    @staticmethod
+    def _compose_report_message(report: Report, completed: int, total: int) -> str:
+        prefix = f"{completed}/{total or '—'}"
+        if report.processing_status == ProcessingStatus.INVALID_CERT_FORMAT:
+            return f"{prefix}: некорректный формат свидетельства «{report.source_certificate_number or '—'}»"
+        if report.processing_status == ProcessingStatus.ERROR:
+            return f"{prefix}: ошибка при обработке {report.source_certificate_number or '—'}"
+        if report.processing_status == ProcessingStatus.NOT_FOUND:
+            mi_label = report.mi_number or 'без серийного номера'
+            return f"{prefix}: запись не найдена ({mi_label})"
+        if report.processing_status == ProcessingStatus.MATCHED:
+            if report.certificate_updated and report.result_docnum:
+                return f"{prefix}: обновлено свидетельство → {report.result_docnum}"
+            return f"{prefix}: подтверждена актуальность свидетельства {report.source_certificate_number or '—'}"
+        return f"{prefix}: обработан ряд {report.excel_source_row or '—'}"
+
     async def update_task_progress(
         self,
         task: ProcessingTask,
         progress: int,
         status: Optional[ProcessingTaskStatus] = None,
+        *,
+        summary: Optional[dict[str, Any]] = None,
+        log_message: Optional[str] = None,
+        report: Optional[Report] = None,
     ) -> None:
-        task.progress = max(0, min(100, progress))
+        previous_progress = task.progress or 0
+        new_progress = max(0, min(100, progress))
+        task.progress = new_progress
         if status:
             task.status = status
-        app_logger.debug("Task %s progress: %d%% (%s)", task.task_id, task.progress, task.status.value)
+        progress_delta = abs(new_progress - previous_progress)
+        should_log_info = (
+            new_progress in {0, 100}
+            or progress_delta >= 5
+            or (previous_progress == 0 and new_progress > 0)
+        )
+        processed = task.processed_records or 0
+        total = task.total_records or 0
+        log_args = (task.task_id, new_progress, task.status.value, processed, total)
+        if should_log_info:
+            app_logger.info(
+                "Task %s progress: %d%% (%s) - processed %d of %d",
+                *log_args,
+            )
+        else:
+            app_logger.debug(
+                "Task %s progress: %d%% (%s) - processed %d of %d",
+                *log_args,
+            )
+
+        snapshot_summary = summary if summary is not None else (task.summary or {})
+        payload: dict[str, Any] = {
+            "type": "progress",
+            "task_id": task.task_id,
+            "progress": new_progress,
+            "status": task.status.value,
+            "processed": processed,
+            "total": total,
+            "summary": snapshot_summary,
+        }
+        if log_message:
+            payload["log"] = log_message
+        if report is not None:
+            payload["report"] = self._compact_report(report)
+        await ProgressNotifier.broadcast(task.task_id, payload)
 
     async def process_with_progress_tracking(
         self,
@@ -353,6 +446,7 @@ class DataProcessorService:
         if not task_id:
             task_id = str(uuid.uuid4())
 
+        start_time = time.perf_counter()
         task = self.create_processing_task(file_path, task_id)
         task.status = ProcessingTaskStatus.PROCESSING
 
@@ -373,7 +467,24 @@ class DataProcessorService:
                 app_logger.warning(f"No valid records found in Excel file {file_path}")
                 task.status = ProcessingTaskStatus.COMPLETED
                 task.progress = 100
-                task.summary = {"processed": 0, "updated": 0, "unchanged": 0, "not_found": 0}
+                elapsed_seconds = time.perf_counter() - start_time
+                self._last_processing_duration = elapsed_seconds
+                task.summary = {
+                    "processed": 0,
+                    "updated": 0,
+                    "unchanged": 0,
+                    "not_found": 0,
+                    "processing_time_seconds": round(elapsed_seconds, 2),
+                }
+                task.completed_at = datetime.now(timezone.utc)
+                task.processing_time_seconds = elapsed_seconds
+                await self.update_task_progress(
+                    task,
+                    100,
+                    ProcessingTaskStatus.COMPLETED,
+                    summary=task.summary,
+                    log_message="Файл не содержит валидных записей",
+                )
                 return []
 
             summary_running = {
@@ -381,7 +492,16 @@ class DataProcessorService:
                 "updated": 0,
                 "unchanged": 0,
                 "not_found": 0,
+                "total": total_records,
             }
+
+            if task.progress == 0:
+                await self.update_task_progress(
+                    task,
+                    5,
+                    summary=summary_running.copy(),
+                    log_message="Старт обработки записей",
+                )
 
             async def progress_callback(completed: int, total: int, report: Report) -> None:
                 summary_running["processed"] = completed
@@ -400,7 +520,14 @@ class DataProcessorService:
                 if total > 0:
                     progress = math.ceil((completed / total) * 100) if completed < total else 100
 
-                await self.update_task_progress(task, progress)
+                log_message = self._compose_report_message(report, completed, total)
+                await self.update_task_progress(
+                    task,
+                    progress,
+                    summary=summary_running.copy(),
+                    log_message=log_message,
+                    report=report,
+                )
 
             reports = await self._process_records_concurrently(
                 excel_data_list,
@@ -408,16 +535,33 @@ class DataProcessorService:
             )
 
             final_stats = self._compute_processing_statistics(reports)
+            elapsed_seconds = time.perf_counter() - start_time
+            self._last_processing_duration = elapsed_seconds
             task.summary = {
                 "processed": final_stats.get("processed", 0),
                 "updated": final_stats.get("updated", 0),
                 "unchanged": final_stats.get("unchanged", 0),
                 "not_found": final_stats.get("not_found", 0),
+                "processing_time_seconds": round(elapsed_seconds, 2),
             }
             task.processed_records = total_records
+            task.completed_at = datetime.now(timezone.utc)
+            task.processing_time_seconds = elapsed_seconds
 
-            await self.update_task_progress(task, 100, ProcessingTaskStatus.COMPLETED)
+            await self.update_task_progress(
+                task,
+                100,
+                ProcessingTaskStatus.COMPLETED,
+                summary=task.summary,
+                log_message="Обработка завершена успешно",
+            )
             self._log_processing_statistics(reports)
+            app_logger.info(
+                "Task %s processed %d records in %.2f seconds",
+                task_id,
+                total_records,
+                elapsed_seconds,
+            )
             return reports
 
         except Exception as exc:
@@ -425,7 +569,15 @@ class DataProcessorService:
             task.status = ProcessingTaskStatus.FAILED
             task.error_message = str(exc)
             task.summary = task.summary or {"processed": 0, "updated": 0, "unchanged": 0, "not_found": 0}
-            await self.update_task_progress(task, 100)
+            await self.update_task_progress(
+                task,
+                100,
+                ProcessingTaskStatus.FAILED,
+                summary=task.summary,
+                log_message=f"Обработка завершилась ошибкой: {exc}",
+            )
+            self._last_processing_duration = time.perf_counter() - start_time
+            task.processing_time_seconds = self._last_processing_duration
             raise
         finally:
             if task.status == ProcessingTaskStatus.PROCESSING:

@@ -1,12 +1,13 @@
 import os
 
-from fastapi import APIRouter, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 
 # Internal imports
 from src.api.routes.upload import active_tasks  # Using the same global task store
 from src.models.processing_task import ProcessingTaskStatus
+from src.services.progress_notifier import ProgressNotifier
 from src.utils.web_utils import log_user_action
 
 router = APIRouter()
@@ -37,6 +38,7 @@ async def get_status_page(request: Request, task_id: str):
                 "default_dataset_url": f"/api/v1/results/{task_id}/dataset",
                 "default_download_url": f"/api/v1/results/{task_id}",
                 "status_url": f"/api/task-status/{task_id}",
+                "stream_url": "",
                 "status_value": "NOT_FOUND",
                 "progress": 0,
                 "completed": False,
@@ -71,6 +73,7 @@ async def get_results_page(request: Request, task_id: str):
                 "default_dataset_url": f"/api/v1/results/{task_id}/dataset",
                 "default_download_url": f"/api/v1/results/{task_id}",
                 "status_url": f"/api/task-status/{task_id}",
+                "stream_url": "",
                 "status_value": "NOT_FOUND",
                 "progress": 0,
                 "completed": False,
@@ -99,13 +102,15 @@ async def get_results_page(request: Request, task_id: str):
             "default_dataset_url": f"/api/v1/results/{task_id}/dataset",
             "default_download_url": f"/api/v1/results/{task_id}",
             "status_url": f"/api/task-status/{task_id}",
+            "stream_url": f"/api/task-stream/{task_id}",
             "status_value": task.status.value,
             "progress": task.progress,
             "completed": task.status == ProcessingTaskStatus.COMPLETED,
             "created_at": task.created_at.isoformat() if task.created_at else None,
             "completed_at": task.completed_at.isoformat() if task.completed_at else None,
-            "processed_records": task.processed_records,
-            "total_records": task.total_records or 0
+        "processed_records": task.processed_records,
+        "total_records": task.total_records or 0,
+        "processing_time_seconds": task.processing_time_seconds,
         }
     )
 
@@ -132,6 +137,32 @@ async def get_task_status_for_web(task_id: str):
         "summary": task.summary or {},
         "processed_records": task.processed_records if task.processed_records is not None else 0,
         "total_records": task.total_records if task.total_records is not None else 0,
+        "processing_time_seconds": task.processing_time_seconds,
     }
 
     return payload
+
+
+@router.get("/api/task-stream/{task_id}")
+async def stream_task_progress(task_id: str):
+    if task_id not in active_tasks:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    task = active_tasks[task_id]
+    dataset_available = bool(task.preview_path and os.path.exists(task.preview_path))
+    result_available = bool(task.result_path and os.path.exists(task.result_path))
+
+    initial_payload = {
+        "type": "snapshot",
+        "task_id": task.task_id,
+        "status": task.status.value,
+        "progress": task.progress,
+        "processed": task.processed_records or 0,
+        "total": task.total_records or 0,
+        "summary": task.summary or {},
+        "dataset_available": dataset_available,
+        "result_available": result_available,
+    }
+
+    stream = ProgressNotifier.stream(task_id, initial_payload)
+    return StreamingResponse(stream, media_type="text/event-stream", headers={"Cache-Control": "no-store"})

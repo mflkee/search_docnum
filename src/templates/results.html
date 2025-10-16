@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 
-{% block title %}Results - Arshin Registry Synchronization System{% endblock %}
+{% block title %}Консоль результатов · Аршин{% endblock %}
 
 {% block content %}
 <div class="results-wrapper"
@@ -10,6 +10,7 @@
      data-default-dataset-url="{{ default_dataset_url if default_dataset_url else '' }}"
      data-default-download-url="{{ default_download_url if default_download_url else '' }}"
      data-status-url="{{ status_url if status_url else '' }}"
+     data-stream-url="{{ stream_url if stream_url else '' }}"
      data-status="{{ status_value if status_value else '' }}"
      data-progress="{{ progress if progress is not none else 0 }}"
      data-summary='{{ summary | tojson }}'
@@ -45,17 +46,29 @@
         <a href="/" class="btn btn-outline-light">Вернуться к загрузке</a>
     </div>
     {% else %}
-    <section class="progress-panel" id="progressPanel" {% if completed %}hidden{% endif %}>
-        <div class="progress-meta">
-            <span id="statusLabel" class="progress-status">{{ status_value }}</span>
-            <span id="progressDetailed" class="progress-tally">{{ processed_records or 0 }}{% if total_records %} / {{ total_records }}{% endif %}</span>
-            <span id="progressLabel" class="progress-value">{{ progress }}%</span>
+    <section class="terminal-panel" id="terminalPanel">
+        <header class="terminal-header">
+            <div class="terminal-lights" aria-hidden="true">
+                <span class="terminal-light terminal-light--red"></span>
+                <span class="terminal-light terminal-light--amber"></span>
+                <span class="terminal-light terminal-light--green"></span>
+            </div>
+            <div class="terminal-statusline">
+                <span id="statusLabel" class="terminal-status">{{ status_value }}</span>
+                <span id="progressDetailed" class="terminal-tally">
+                    {{ processed_records or 0 }}{% if total_records %} / {{ total_records }}{% endif %}
+                </span>
+            </div>
+            <span id="progressLabel" class="terminal-percentage">{{ progress }}%</span>
+        </header>
+        <div class="terminal-progressbar" aria-hidden="true">
+            <div class="terminal-progressbar__fill" id="terminalProgressFill" style="width: {{ progress }}%"></div>
         </div>
-        <div class="progress">
-            <div id="progressBar" class="progress-bar" role="progressbar" style="width: {{ progress }}%"></div>
+        <div class="terminal-body">
+            <pre id="terminalLog" class="terminal-log" tabindex="0"></pre>
         </div>
         {% if error and status_value == 'FAILED' %}
-        <p class="progress-error">{{ error }}</p>
+        <p class="terminal-error">{{ error }}</p>
         {% endif %}
     </section>
 
@@ -110,6 +123,16 @@
         <article class="summary-card missing" data-summary-key="not_found">
             <h3>Не найдено</h3>
             <p class="summary-value" id="summaryMissing">{{ summary.not_found or summary.missing or 0 }}</p>
+        </article>
+        <article class="summary-card time" data-summary-key="processing_time_seconds">
+            <h3>Время обработки</h3>
+            <p class="summary-value" id="summaryDuration">
+                {% if summary.processing_time_seconds %}
+                    {{ "%.2f"|format(summary.processing_time_seconds) }} с
+                {% else %}
+                    —
+                {% endif %}
+            </p>
         </article>
     </section>
     {% endif %}

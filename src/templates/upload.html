@@ -1,81 +1,69 @@
 {% extends "base.html" %}
 
-{% block title %}Upload - Arshin Registry Synchronization System{% endblock %}
+{% block title %}Загрузка данных · Консоль Аршин{% endblock %}
 
 {% block content %}
-<div class="row justify-content-center">
-    <div class="col-md-8">
-        <div class="card">
-            <div class="card-header">
-                <h3>Upload Excel File for Processing</h3>
-            </div>
-            <div class="card-body">
-                <form id="uploadForm" enctype="multipart/form-data">
-                    <div class="mb-3">
-                        <label for="file" class="form-label">Select Excel File</label>
-                        <input type="file" class="form-control" id="file" name="file" accept=".xlsx,.xls" required>
-                        <div class="form-text">Supported formats: .xlsx, .xls. Maximum file size: 100MB.</div>
-                    </div>
-                    
-                    <div class="accordion mb-3" id="advancedOptions">
-                        <div class="accordion-item">
-                            <h2 class="accordion-header" id="headingOne">
-                                <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#collapseOne" aria-expanded="false" aria-controls="collapseOne">
-                                    Advanced Column Settings
-                                </button>
-                            </h2>
-                            <div id="collapseOne" class="accordion-collapse collapse" aria-labelledby="headingOne" data-bs-parent="#advancedOptions">
-                                <div class="accordion-body">
-                                    <div class="mb-3">
-                                        <label for="verificationDateColumn" class="form-label">Verification Date Column</label>
-                                        <input type="text" class="form-control" id="verificationDateColumn" name="verification_date_column" value="Дата поверки" placeholder="Column name or identifier (e.g., AE, Дата поверки)">
-                                        <div class="form-text">Default: "Дата поверки". Can be column name or Excel column letter (e.g., AE).</div>
-                                    </div>
-                                    <div class="mb-3">
-                                        <label for="certificateNumberColumn" class="form-label">Certificate Number Column</label>
-                                        <input type="text" class="form-control" id="certificateNumberColumn" name="certificate_number_column" value="Наличие документа с отметкой о поверке (№ св-ва о поверке)" placeholder="Column name or identifier (e.g., AI, Наличие документа с отметкой о поверке (№ св-ва о поверке))">
-                                        <div class="form-text">Default: "Наличие документа с отметкой о поверке (№ св-ва о поверке)". Can be column name or Excel column letter (e.g., AI).</div>
-                                    </div>
-                                    <div class="mb-3">
-                                        <label for="sheetName" class="form-label">Sheet Name</label>
-                                        <input type="text" class="form-control" id="sheetName" name="sheet_name" value="Перечень" placeholder="Sheet name (e.g., Перечень, List, Main)">
-                                        <div class="form-text">Default: "Перечень". The name of the Excel sheet to process.</div>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                    
-                    <button type="submit" class="btn btn-primary" id="uploadBtn">Upload and Process</button>
-                    <div class="mt-3" id="uploadProgress" style="display: none;">
-                        <div class="progress">
-                            <div class="progress-bar" role="progressbar" style="width: 0%"></div>
-                        </div>
-                        <div class="mt-2">Uploading... <span id="progressText">0%</span></div>
-                    </div>
-                </form>
-                
-                <div class="mt-4" id="resultDiv" style="display: none;">
-                    <h5>Upload Successful!</h5>
-                    <p>Your file has been uploaded and processing has started.</p>
-                    <p><strong>Task ID:</strong> <span id="taskId"></span></p>
-                    <p>Check the status of your processing <a href="#" id="statusLink">here</a>.</p>
-                </div>
-                
-                <div class="mt-4" id="errorDiv" class="alert alert-danger" style="display: none;">
-                    <h5>Error</h5>
-                    <p id="errorMessage"></p>
-                </div>
-            </div>
+<section class="results-wrapper">
+    <header class="results-head">
+        <div>
+            <h2>Загрузка и запуск обработки</h2>
+            <p>Подготовьте Excel и выполните загрузку в консоль</p>
         </div>
-    </div>
-</div>
+    </header>
 
-<!-- Drag and drop overlay -->
+    <form id="uploadForm" class="terminal-form" enctype="multipart/form-data">
+        <fieldset class="terminal-fieldset">
+            <legend>1. Выбор файла</legend>
+            <label for="file" class="terminal-label">Файл Excel (*.xlsx / *.xls)</label>
+            <input type="file" class="form-control terminal-input" id="file" name="file" accept=".xlsx,.xls" required>
+            <p class="terminal-hint">Максимальный размер: 100 МБ. Формат — выгрузка реестра СИ.</p>
+        </fieldset>
+
+        <fieldset class="terminal-fieldset">
+            <legend>2. Параметры колонок</legend>
+            <div class="terminal-grid">
+                <label class="terminal-label" for="verificationDateColumn">Колонка "Дата поверки"</label>
+                <input type="text" class="form-control terminal-input" id="verificationDateColumn" name="verification_date_column" value="Дата поверки" placeholder="например, AE или Дата поверки">
+
+                <label class="terminal-label" for="certificateNumberColumn">Колонка "№ свидетельства"</label>
+                <input type="text" class="form-control terminal-input" id="certificateNumberColumn" name="certificate_number_column" value="Наличие документа с отметкой о поверке (№ св-ва о поверке)" placeholder="например, AI или полное название">
+
+                <label class="terminal-label" for="sheetName">Лист Excel</label>
+                <input type="text" class="form-control terminal-input" id="sheetName" name="sheet_name" value="Перечень" placeholder="Название листа, по умолчанию «Перечень»">
+            </div>
+        </fieldset>
+
+        <div class="terminal-actions">
+            <button type="submit" class="btn btn-success" id="uploadBtn">Запустить обработку</button>
+            <span class="terminal-tip">После загрузки откроется статус в отдельной консоли.</span>
+        </div>
+
+        <div class="terminal-progress" id="uploadProgress" hidden>
+            <span class="terminal-progress__label">Загрузка...</span>
+            <div class="progress terminal-progress__bar">
+                <div class="progress-bar" role="progressbar" style="width: 0%"></div>
+            </div>
+            <span class="terminal-progress__value" id="progressText">0%</span>
+        </div>
+    </form>
+
+    <section class="terminal-feedback" id="resultDiv" style="display: none;">
+        <h3>✔ Задача принята</h3>
+        <p>Файл успешно передан. Обработка начата.</p>
+        <p><span class="terminal-label">Идентификатор:</span> <span id="taskId"></span></p>
+        <p>Статус живой консоли: <a href="#" id="statusLink">открыть</a></p>
+    </section>
+
+    <section class="terminal-feedback terminal-feedback--error" id="errorDiv" style="display: none;">
+        <h3>⚠ Ошибка</h3>
+        <p id="errorMessage"></p>
+    </section>
+</section>
+
 <div id="dropZone" class="drop-overlay" style="display: none;">
     <div class="drop-content">
-        <h3>Drop your Excel file here</h3>
-        <p>or click to browse</p>
+        <h3>Перетащите Excel сюда</h3>
+        <p>или щёлкните, чтобы выбрать файл</p>
     </div>
 </div>
 {% endblock %}

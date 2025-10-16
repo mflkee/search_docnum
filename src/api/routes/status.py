@@ -43,6 +43,7 @@ async def get_task_status(task_id: str) -> dict[str, Any]:
             "summary": task.summary or {},
             "processed_records": task.processed_records,
             "total_records": task.total_records,
+            "processing_time_seconds": task.processing_time_seconds,
         }
 
         # Include error message if task failed

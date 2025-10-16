@@ -20,8 +20,9 @@ class ArshinClientService:
     def __init__(self):
         self.base_url = settings.arshin_api_base_url
         max_connections = settings.arshin_max_concurrent_requests
+        request_timeout = httpx.Timeout(settings.arshin_api_timeout_seconds)
         self.client = httpx.AsyncClient(
-            timeout=httpx.Timeout(30.0),  # 30 second timeout
+            timeout=request_timeout,
             limits=httpx.Limits(
                 max_keepalive_connections=max_connections,
                 max_connections=max_connections
@@ -30,7 +31,12 @@ class ArshinClientService:
         self._request_timestamps: deque[float] = deque()
         self._rate_lock = asyncio.Lock()
         self.rate_limit_period = settings.arshin_api_rate_period
-        self.rate_limit_requests = settings.arshin_api_rate_limit
+        self.rate_limit_requests = max(0, settings.arshin_api_rate_limit)
+        self.rate_limit_penalty_requests = max(0, settings.arshin_api_rate_penalty_limit)
+        self.rate_penalty_duration = max(1, settings.arshin_api_rate_penalty_duration)
+        self._penalty_until: float = 0.0
+        self._rate_limit_enabled = self.rate_limit_requests > 0
+        self._recent_timeouts: deque[float] = deque(maxlen=5)
 
     async def close(self):
         """Close the httpx client"""
@@ -71,26 +77,104 @@ class ArshinClientService:
 
         return None
 
+    def _determine_stage2_year(
+        self,
+        *,
+        stage1_year: Optional[int],
+        requested_year: Optional[int],
+        valid_until_year: Optional[int],
+        selected_record: dict[str, Any],
+    ) -> Optional[int]:
+        """Pick the most sensible target year for stage 2 lookups."""
+        candidate_dates = [
+            self._parse_date_value(selected_record.get("valid_date")),
+            self._parse_date_value(selected_record.get("validity_date")),
+            self._parse_date_value(selected_record.get("valid_until")),
+            self._parse_date_value(selected_record.get("verification_date")),
+        ]
+
+        for dt in candidate_dates:
+            if dt and dt.year >= 1900:
+                return dt.year
+
+        if valid_until_year and valid_until_year >= 1900:
+            return valid_until_year
+
+        if requested_year and requested_year >= 1900:
+            return requested_year
+
+        if stage1_year and stage1_year >= 1900:
+            return stage1_year
+
+        return None
+
+    @staticmethod
+    def _build_stage2_attempts(target_year: Optional[int]) -> list[tuple[Optional[int], bool, bool]]:
+        """
+        Prepare a minimal ordered set of stage 2 attempts.
+
+        Returns tuples of (year, include_modification, include_notation).
+        """
+        attempts: list[tuple[Optional[int], bool, bool]] = []
+
+        if target_year:
+            attempts.append((target_year, True, True))
+            attempts.append((target_year, False, False))
+        else:
+            attempts.append((None, True, True))
+            attempts.append((None, False, False))
+
+        return attempts
+
     async def _rate_limit(self):
         """Implement rate limiting to prevent overloading the external API"""
+        if not self._rate_limit_enabled:
+            return
+
         while True:
             async with self._rate_lock:
                 now = time.monotonic()
+                in_penalty_window = (
+                    self.rate_limit_penalty_requests > 0 and now < self._penalty_until
+                )
+                effective_limit = (
+                    self.rate_limit_penalty_requests if in_penalty_window else self.rate_limit_requests
+                )
+
+                if effective_limit <= 0:
+                    return
 
                 # Drop timestamps outside the rate window
                 window_start = now - self.rate_limit_period
                 while self._request_timestamps and self._request_timestamps[0] <= window_start:
                     self._request_timestamps.popleft()
 
-                if len(self._request_timestamps) < self.rate_limit_requests:
+                if len(self._request_timestamps) < effective_limit:
                     self._request_timestamps.append(now)
                     return
 
                 wait_time = self.rate_limit_period - (now - self._request_timestamps[0])
+                if in_penalty_window:
+                    wait_time = max(wait_time, self._penalty_until - now)
 
             wait_time = max(wait_time, 0.0)
             app_logger.debug(f"Rate limiting: waiting {wait_time:.2f}s")
             await asyncio.sleep(wait_time)
+
+    def _apply_rate_penalty(self, reason: str) -> None:
+        if not self._rate_limit_enabled or self.rate_limit_penalty_requests <= 0:
+            return
+        penalty_until = time.monotonic() + self.rate_penalty_duration
+        if penalty_until > self._penalty_until:
+            app_logger.info(
+                "Applying rate penalty (%s) for %.1f seconds (limit=%d req/%ds)",
+                reason,
+                self.rate_penalty_duration,
+                self.rate_limit_penalty_requests,
+                self.rate_limit_period,
+            )
+        self._penalty_until = penalty_until
+        self._recent_timeouts.clear()
 
     async def _make_request_with_retry(self, method: str, url: str, **kwargs) -> Optional[httpx.Response]:
         """
@@ -108,6 +192,24 @@ class ArshinClientService:
                 else:
                     raise ValueError(f"Unsupported HTTP method: {method}")
 
+                if response.status_code == 429:
+                    self._apply_rate_penalty("HTTP 429")
+                    app_logger.warning(
+                        "Arshin API responded with 429 Too Many Requests (attempt %d). Retrying after penalty...",
+                        attempt + 1,
+                    )
+                    await asyncio.sleep(self.rate_limit_period)
+                    continue
+
+                if response.status_code == 503:
+                    self._apply_rate_penalty("HTTP 503")
+                    app_logger.warning(
+                        "Arshin API responded with 503 Service Unavailable (attempt %d); retrying after backoff...",
+                        attempt + 1,
+                    )
+                    await asyncio.sleep(self.rate_limit_period)
+                    continue
+
                 # If successful, return the response
                 if response.status_code < 500:  # Not a server error
                     return response
@@ -116,11 +218,26 @@ class ArshinClientService:
                 app_logger.warning(f"Server error {response.status_code} on attempt {attempt + 1}, retrying...")
 
             except httpx.TimeoutException:
-                app_logger.warning(f"Timeout on attempt {attempt + 1}, retrying...")
+                self._recent_timeouts.append(time.monotonic())
+                if attempt < max_retries - 1:
+                    app_logger.debug(f"Timeout on attempt {attempt + 1}, retrying...")
+                else:
+                    app_logger.warning(f"Timeout on attempt {attempt + 1}, retrying...")
+                if len(self._recent_timeouts) == self._recent_timeouts.maxlen:
+                    oldest = self._recent_timeouts[0]
+                    newest = self._recent_timeouts[-1]
+                    if newest - oldest <= max(5.0, self.rate_limit_period * 2):
+                        self._apply_rate_penalty("consecutive timeouts")
             except httpx.RequestError as e:
-                app_logger.warning(f"Request error on attempt {attempt + 1}: {e}, retrying...")
+                if attempt < max_retries - 1:
+                    app_logger.debug(f"Request error on attempt {attempt + 1}: {e}, retrying...")
+                else:
+                    app_logger.warning(f"Request error on attempt {attempt + 1}: {e}, retrying...")
             except Exception as e:
-                app_logger.warning(f"Unexpected error on attempt {attempt + 1}: {e}, retrying...")
+                if attempt < max_retries - 1:
+                    app_logger.debug(f"Unexpected error on attempt {attempt + 1}: {e}, retrying...")
+                else:
+                    app_logger.warning(f"Unexpected error on attempt {attempt + 1}: {e}, retrying...")
 
             # Wait before retrying (exponential backoff)
             if attempt < max_retries - 1:
@@ -274,7 +391,9 @@ class ArshinClientService:
         self,
         certificate_number: str,
         year: Optional[int],
-        valid_until_year: Optional[int] = None
+        valid_until_year: Optional[int] = None,
+        *,
+        skip_stage2: bool = False,
     ) -> Optional[ArshinRegistryRecord]:
         """
         Perform the complete two-stage verification process to get a specific instrument record.
@@ -325,6 +444,35 @@ class ArshinClientService:
             app_logger.warning(f"No valid record found after selecting most recent for certificate {certificate_number}")
             return None
 
+        if skip_stage2:
+            selected_doc = (selected_record.get('result_docnum') or '').strip()
+            requested_doc = (certificate_number or '').strip()
+            if selected_doc != requested_doc:
+                app_logger.debug(
+                    "Stage 2 skip requested for certificate %s, but stage 1 returned different document (%s vs %s). Proceeding with stage 2.",
+                    certificate_number,
+                    selected_doc,
+                    requested_doc,
+                )
+            else:
+                app_logger.debug(
+                    "Stage 2 skipped for certificate %s (year %s)",
+                    certificate_number,
+                    year,
+                )
+                return self._convert_to_arshin_record(
+                    selected_record,
+                    is_stage1_result=True,
+                    stage2_successful=False,
+                    modification_relaxed=False,
+                    notation_relaxed=False,
+                )
+
+            app_logger.debug(
+                "Stage 2 skip hinted for certificate %s, but continuing search due to certificate mismatch.",
+                certificate_number,
+            )
+
         # Extract parameters from the selected record for stage 2 search
         mit_number = selected_record.get('mit_number')
         mit_title = selected_record.get('mit_title')
@@ -332,165 +480,118 @@ class ArshinClientService:
         mi_number = selected_record.get('mi_number')
         mi_modification = selected_record.get('mi_modification')  # if available
 
-        # Prepare hint years from selected record
-        selected_verification = self._parse_date_value(selected_record.get('verification_date'))
-        selected_valid = self._parse_date_value(
-            selected_record.get('valid_date')
-            or selected_record.get('validity_date')
-            or selected_record.get('valid_until')
+        target_year = self._determine_stage2_year(
+            stage1_year=stage1_year,
+            requested_year=year,
+            valid_until_year=valid_until_year,
+            selected_record=selected_record,
         )
-
-        # Stage 2: Search by instrument parameters to get the actual verification record.
-        # Try prioritized years first to capture new verifications, fall back as needed.
-        current_year = datetime.now().year
-        candidate_years: list[int] = []
-
-        def add_candidate(value: Optional[int]) -> None:
-            if value and value > 1900 and value not in candidate_years:
-                candidate_years.append(value)
-
-        add_candidate(current_year)
-        add_candidate(current_year + 1)
-        add_candidate(current_year - 1)
-        add_candidate(stage1_year)
-        add_candidate(year)
-        if year is not None:
-            add_candidate(year + 1)
-            add_candidate(year - 1)
-        add_candidate(valid_until_year)
-        if valid_until_year is not None:
-            add_candidate(valid_until_year + 1)
-            add_candidate(valid_until_year - 1)
-        if selected_verification:
-            add_candidate(selected_verification.year)
-            add_candidate(selected_verification.year + 1)
-        if selected_valid:
-            add_candidate(selected_valid.year)
-            add_candidate(selected_valid.year + 1)
-
         app_logger.debug(
-            f"Stage 2 candidate years for certificate {certificate_number}: {candidate_years}"
+            "Stage 2 target year for certificate %s: %s",
+            certificate_number,
+            target_year,
         )
 
         has_modification = bool(mi_modification and str(mi_modification).strip())
         has_notation = bool(mit_notation and str(mit_notation).strip())
         stage1_docnum = (selected_record.get('result_docnum') or '').strip()
         stage2_successful = False
-        found_updated_doc = False
-        stage2_records: list[tuple[dict[str, Any], bool, bool]] = []
-        seen_record_ids: set[str] = set()
+        chosen_record: Optional[dict[str, Any]] = None
+        chosen_flags = (True, True)
 
-        unique_candidate_years = sorted({year for year in candidate_years}, reverse=True)
-
-        filter_states: list[tuple[bool, bool]] = [(True, True)]
-        if has_modification:
-            filter_states.append((False, True))
-        if has_notation:
-            filter_states.append((True, False))
-        if has_modification or has_notation:
-            filter_states.append((False, False))
-
-        seen_states: set[tuple[bool, bool]] = set()
-        ordered_filter_states: list[tuple[bool, bool]] = []
-        for state in filter_states:
-            if state not in seen_states:
-                ordered_filter_states.append(state)
-                seen_states.add(state)
-
-        attempt_queue: list[tuple[Optional[int], bool, bool]] = []
-        seen_attempts: set[tuple[Optional[int], bool, bool]] = set()
-        for include_modification, include_notation in ordered_filter_states:
-            for candidate_year in unique_candidate_years:
-                attempt = (candidate_year, include_modification, include_notation)
-                if attempt not in seen_attempts:
-                    attempt_queue.append(attempt)
-                    seen_attempts.add(attempt)
-            any_year_attempt = (None, include_modification, include_notation)
-            if any_year_attempt not in seen_attempts:
-                attempt_queue.append(any_year_attempt)
-                seen_attempts.add(any_year_attempt)
-
-        for candidate_year, include_modification, include_notation in attempt_queue:
-            candidate_results = await self.search_by_instrument_params(
+        attempts = self._build_stage2_attempts(target_year)
+        attempt_coroutines = [
+            self.search_by_instrument_params(
                 mit_number=mit_number,
                 mit_title=mit_title,
                 mit_notation=mit_notation if include_notation else None,
                 mi_modification=mi_modification if include_modification else None,
                 mi_number=mi_number,
-                year=candidate_year
-            ) or []
+                year=candidate_year,
+            )
+            for candidate_year, include_modification, include_notation in attempts
+        ]
 
-            if candidate_results:
-                stage2_successful = True
-                modifier_label = "with modification" if include_modification else "without modification"
-                notation_label = "with notation" if include_notation else "without notation"
-                year_label = candidate_year if candidate_year is not None else "any year"
-                app_logger.debug(
-                    f"Stage 2 search returned {len(candidate_results)} records for certificate {certificate_number} "
-                    f"using {modifier_label}, {notation_label} ({year_label})"
+        attempt_results_list = await asyncio.gather(*attempt_coroutines, return_exceptions=True)
+
+        for attempt_meta, attempt_result in zip(attempts, attempt_results_list):
+            candidate_year, include_modification, include_notation = attempt_meta
+
+            if isinstance(attempt_result, Exception):
+                app_logger.warning(
+                    "Stage 2 search attempt failed for certificate %s (year=%s, mod=%s, notation=%s): %s",
+                    certificate_number,
+                    candidate_year,
+                    include_modification,
+                    include_notation,
+                    attempt_result,
                 )
-                for record in candidate_results:
-                    record_id = str(record.get('vri_id') or record.get('id') or '')
-                    if record_id in seen_record_ids:
-                        continue
-                    stage2_records.append((record, include_modification, include_notation))
-                    seen_record_ids.add(record_id)
-                    normalized_docnum = (record.get('result_docnum') or '').strip()
-                    if normalized_docnum and normalized_docnum != stage1_docnum:
-                        found_updated_doc = True
+                continue
 
-            if found_updated_doc:
+            attempt_results = attempt_result or []
+
+            if not attempt_results:
+                app_logger.debug(
+                    "Stage 2 returned no records for certificate %s (year=%s, mod=%s, notation=%s)",
+                    certificate_number,
+                    candidate_year,
+                    include_modification,
+                    include_notation,
+                )
+                continue
+
+            stage2_successful = True
+            modifier_label = "with modification" if include_modification else "without modification"
+            notation_label = "with notation" if include_notation else "without notation"
+            year_label = candidate_year if candidate_year is not None else "any year"
+            app_logger.debug(
+                "Stage 2 search returned %d records for certificate %s using %s, %s (%s)",
+                len(attempt_results),
+                certificate_number,
+                modifier_label,
+                notation_label,
+                year_label,
+            )
+
+            updated_candidates = [
+                record for record in attempt_results
+                if (record.get('result_docnum') or '').strip()
+                and (record.get('result_docnum') or '').strip() != stage1_docnum
+            ]
+            prioritized_pool = updated_candidates or attempt_results
+            selected_candidate = self._select_most_recent_record(prioritized_pool)
+            if not selected_candidate:
+                continue
+
+            chosen_record = selected_candidate
+            chosen_flags = (include_modification, include_notation)
+
+            if updated_candidates:
                 break
 
-        if not stage2_successful or not stage2_records:
+        if not stage2_successful or not chosen_record:
             app_logger.info(
-                f"No results found in stage 2 for certificate {certificate_number} after relaxing filters"
+                "Stage 2 did not yield new records for certificate %s; returning stage 1 data",
+                certificate_number,
             )
             return self._convert_to_arshin_record(
                 selected_record,
                 is_stage1_result=True,
                 stage2_successful=False,
                 modification_relaxed=False,
-                notation_relaxed=False
+                notation_relaxed=False,
             )
 
-        candidate_dicts = [record for record, _, _ in stage2_records]
-        final_record = self._select_most_recent_record(candidate_dicts)
-        if not final_record:
-            app_logger.warning(
-                f"Stage 2 produced records but no valid final record selected for certificate {certificate_number}"
-            )
-            return self._convert_to_arshin_record(
-                selected_record,
-                is_stage1_result=True,
-                stage2_successful=False,
-                modification_relaxed=False,
-                notation_relaxed=False
-            )
-
-        selected_entry = next(
-            (
-                (record, include_modification, include_notation)
-                for record, include_modification, include_notation in stage2_records
-                if record is final_record
-            ),
-            None,
-        )
-
-        include_mod_flag = True
-        include_notation_flag = True
-        if selected_entry:
-            _, include_mod_flag, include_notation_flag = selected_entry
-
+        include_mod_flag, include_notation_flag = chosen_flags
         modification_relaxed = bool(has_modification and not include_mod_flag)
         notation_relaxed = bool(has_notation and not include_notation_flag)
 
         return self._convert_to_arshin_record(
-            final_record,
+            chosen_record,
             is_stage1_result=False,
             stage2_successful=True,
             modification_relaxed=modification_relaxed,
-            notation_relaxed=notation_relaxed
+            notation_relaxed=notation_relaxed,
         )
 
     async def batch_search_instruments(self, certificate_numbers: list[str], year: int) -> dict[str, Optional[ArshinRegistryRecord]]:

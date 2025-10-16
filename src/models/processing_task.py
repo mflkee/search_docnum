@@ -28,6 +28,7 @@ class ProcessingTask(BaseModel):
     preview_path: Optional[str] = None
     total_records: Optional[int] = None
     processed_records: int = 0
+    processing_time_seconds: Optional[float] = None
 
     @field_validator('progress')
     @classmethod

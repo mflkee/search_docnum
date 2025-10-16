@@ -1,4 +1,5 @@
-![Альтернативный текст](https://github.com/mflkee/search_docnum/blob/main/docs/screenshot-2025-10-16_16-26-42.png)
+![1](https://github.com/mflkee/search_docnum/blob/main/docs/screenshot-2025-10-16_16-26-42.png)
+![2](https://github.com/mflkee/search_docnum/blob/main/docs/screenshot-2025-10-16_16-26-20.png)
 
 
 Эта система автоматизирует поиск актуальных сведений о поверке средств измерений (СИ) в ФГИС «Аршин», обновляет локальные данные и формирует отчётность. Проект реализован на асинхронном стеке FastAPI + httpx + pandas, конфигурация управляется через `.env`, а логирование ведётся в `logs/app_YYYYMMDD.log`.
